@@ -3,7 +3,6 @@
 import re
 import sys
 import time
-from collections import Counter
 from functools import lru_cache
 
 SIZE = 4
@@ -34,21 +33,12 @@ def neighbors():
     return result
 
 
-def filter_words(words, board):
-    """Keep words of length 3-16 whose letters fit the board's letter counts."""
-    avail = Counter(board.lower())
-    out = []
-    for w in words:
-        if 3 <= len(w) <= CELLS:
-            need = Counter(w)
-            if all(avail[ch] >= n for ch, n in need.items()):
-                out.append(w)
-    return out
-
-
 def build_trie(words):
+    """Trie of words with length 3-16 (nested dicts, terminal key `$`)."""
     root = {}
     for w in words:
+        if not 3 <= len(w) <= CELLS:
+            continue
         node = root
         for ch in w:
             node = node.setdefault(ch, {})
@@ -56,10 +46,9 @@ def build_trie(words):
     return root
 
 
-def solve(board, words):
-    """Return set of words from `words` found on `board`."""
+def solve(board, trie):
+    """Return set of words in prebuilt `trie` found on `board`."""
     board = board.lower()
-    trie = build_trie(filter_words(words, board))
     nbrs = neighbors()
     found = set()
 
@@ -96,7 +85,10 @@ def zipf(word):
 
 
 def rank(found):
-    """Return (common, less_common) sorted lists; zipf < 3 dropped."""
+    """Return (common, less_common); zipf picks tier (< 3 dropped).
+
+    Each tier sorts by length desc, zipf desc, then alphabetical.
+    """
     common, less = [], []
     for w in found:
         z = zipf(w)
@@ -148,11 +140,22 @@ def format_output(board, common, less, ms):
     return "\n".join(lines)
 
 
-def run(board, words):
+def run(board, trie):
     t = time.perf_counter()
-    common, less = rank(solve(board, words))
+    common, less = rank(solve(board, trie))
     ms = (time.perf_counter() - t) * 1000
     print(format_output(board, common, less, ms))
+
+
+def startup():
+    """Load dictionary, build trie once, warm up wordfreq; return trie."""
+    t = time.perf_counter()
+    words = load_dictionary()
+    trie = build_trie(words)
+    zipf("the")
+    ms = (time.perf_counter() - t) * 1000
+    print(f"Loaded {len(words)} words in {ms:.0f} ms")
+    return trie
 
 
 def main(argv):
@@ -162,9 +165,9 @@ def main(argv):
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
-        run(board, load_dictionary())
+        run(board, startup())
         return 0
-    words = load_dictionary()
+    trie = startup()
     while True:
         try:
             raw = input("Board: ")
@@ -177,7 +180,7 @@ def main(argv):
         except ValueError as e:
             print(f"Error: {e}")
             continue
-        run(board, words)
+        run(board, trie)
     return 0
 
 

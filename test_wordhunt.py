@@ -22,27 +22,21 @@ class TestScore(unittest.TestCase):
 class TestSolve(unittest.TestCase):
     def test_no_tile_reuse(self):
         # one 'a' only; "aba" needs two
-        self.assertEqual(wh.solve("abcdefghijklmnop", {"aba"}), set())
+        self.assertEqual(wh.solve("abcdefghijklmnop", wh.build_trie({"aba"})), set())
 
     def test_tile_reuse_ok_with_two(self):
-        self.assertEqual(wh.solve("abacdefghijklmnop", {"aba"}), {"aba"})
+        self.assertEqual(wh.solve("abacdefghijklmnop", wh.build_trie({"aba"})), {"aba"})
 
     def test_diagonal(self):
         # a(0) -> f(5) -> k(10) diagonal
-        self.assertEqual(wh.solve("abcdefghijklmnop", {"afk"}), {"afk"})
+        self.assertEqual(wh.solve("abcdefghijklmnop", wh.build_trie({"afk"})), {"afk"})
 
     def test_non_adjacent(self):
         # a(0) and d(3) not adjacent
-        self.assertEqual(wh.solve("abcdefghijklmnop", {"adg", "aei"}), {"aei"})
+        self.assertEqual(wh.solve("abcdefghijklmnop", wh.build_trie({"adg", "aei"})), {"aei"})
 
     def test_adjacent_found(self):
-        self.assertEqual(wh.solve("abcdefghijklmnop", {"abc", "aeb"}), {"abc", "aeb"})
-
-
-class TestFilter(unittest.TestCase):
-    def test_filter(self):
-        out = wh.filter_words(["abc", "zzz", "aab", "ab", "cab"], "abcdefghijklmnop")
-        self.assertEqual(sorted(out), ["abc", "cab"])
+        self.assertEqual(wh.solve("abcdefghijklmnop", wh.build_trie({"abc", "aeb"})), {"abc", "aeb"})
 
 
 class TestRank(unittest.TestCase):
@@ -72,7 +66,7 @@ class TestParse(unittest.TestCase):
 
 class TestIntegration(unittest.TestCase):
     def test_real_dictionary(self):
-        found = wh.solve("SERSPATGLINESERS", wh.load_dictionary())
+        found = wh.solve("SERSPATGLINESERS", wh.build_trie(wh.load_dictionary()))
         for w in ["pat", "tap", "sap", "line", "sat"]:
             self.assertIn(w, found)
 
