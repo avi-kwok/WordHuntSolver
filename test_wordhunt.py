@@ -39,6 +39,21 @@ class TestSolve(unittest.TestCase):
         self.assertEqual(wh.solve("abcdefghijklmnop", wh.build_trie({"abc", "aeb"})), {"abc", "aeb"})
 
 
+class TestPaths(unittest.TestCase):
+    def test_paths_valid(self):
+        board = "SERSPATGLINESERS"
+        paths = wh.solve_paths(board, wh.build_trie(
+            {"pat", "tap", "line", "stare", "sat", "zzz"}))
+        self.assertTrue(paths)
+        nb = wh.neighbors()
+        for w, p in paths.items():
+            self.assertEqual(len(p), len(w))
+            self.assertEqual(len(set(p)), len(p))
+            self.assertEqual("".join(board[i] for i in p).lower(), w)
+            for x, y in zip(p, p[1:]):
+                self.assertIn(y, nb[x])
+
+
 class TestFilterCommon(unittest.TestCase):
     def test_cutoff(self):
         freq = {"keep": 1e-6, "drop": 9.9e-7, "high": 1e-3}

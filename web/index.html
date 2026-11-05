@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Word Hunt Solver</title>
+<style>
+:root{--bg:#c9814a;--bg2:#a8602f;--tile:#fbf1d8;--tile-hi:#ffd45e;--tile-start:#ff8a3d;--ink:#3b2412;--card:#fff8ea;--muted:#7a5b40}
+*{box-sizing:border-box}
+html,body{margin:0;overflow-x:hidden}
+body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);
+ background:linear-gradient(160deg,var(--bg),var(--bg2));min-height:100vh;padding:16px 12px 32px}
+main{max-width:640px;margin:0 auto}
+h1{margin:0 0 14px;text-align:center;color:#fff8ea;font-weight:900;letter-spacing:1px;font-size:1.5rem;text-shadow:0 2px 0 rgba(0,0,0,.2)}
+.hidden{display:none!important}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:12px;background:rgba(60,30,10,.35);border-radius:20px;max-width:360px;margin:0 auto}
+.grid input,.tile{aspect-ratio:1;width:100%;border-radius:16px;background:var(--tile);box-shadow:0 4px 0 #c9b383,0 6px 10px rgba(0,0,0,.3);
+ font-weight:900;text-transform:uppercase;text-align:center;color:var(--ink)}
+.grid input{border:3px solid transparent;font-size:2rem;padding:0;outline:none;font-family:inherit}
+.grid input:focus{border-color:var(--tile-start)}
+.all{display:block;max-width:360px;margin:16px auto 0;color:#fff8ea;font-weight:700;font-size:.9rem}
+.all input{display:block;width:100%;margin-top:6px;padding:10px 12px;border-radius:12px;border:0;font-size:1.1rem;letter-spacing:2px;text-transform:uppercase;font-family:inherit;background:var(--card);color:var(--ink)}
+.btns{display:flex;gap:10px;justify-content:center;margin-top:16px}
+button{font:inherit;font-weight:800;border:0;border-radius:14px;padding:12px 22px;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.25)}
+button:active{transform:translateY(2px);box-shadow:0 2px 0 rgba(0,0,0,.25)}
+.primary{background:var(--tile-start);color:#fff}
+.secondary{background:var(--tile);color:var(--ink)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.err{color:#fff;background:#a42a1a;border-radius:10px;padding:8px 12px;margin:12px auto 0;max-width:360px;text-align:center;font-weight:700}
+.mini{position:relative;width:200px;margin:0 auto 14px}
+.mini .g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:8px;background:rgba(60,30,10,.35);border-radius:14px;position:relative}
+.tile{display:flex;align-items:center;justify-content:center;font-size:1.4rem;border-radius:10px;box-shadow:0 3px 0 #c9b383;transition:background .15s}
+.tile.on{background:var(--tile-hi)}
+.tile.start{background:var(--tile-start);color:#fff}
+.mini svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.col{background:var(--card);border-radius:14px;padding:8px 6px;box-shadow:0 3px 8px rgba(0,0,0,.25)}
+.col h2{margin:0 0 6px;font-size:.9rem;text-align:center}
+.row{display:grid;grid-template-columns:1.6em 1fr auto auto;gap:5px;align-items:baseline;padding:5px 4px;border-radius:8px;cursor:pointer;font-size:.8rem}
+.row:hover{background:#f3e2bd}
+.row.sel{background:var(--tile-hi)}
+.row .r{color:var(--muted);text-align:right}
+.row .w{font-weight:900;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis}
+.row .p{text-align:right;font-variant-numeric:tabular-nums}
+.row .z{color:var(--muted);font-size:.7rem;width:2em;text-align:right}
+.foot{margin:14px 0 0;color:#fff8ea;text-align:center;font-weight:600;font-size:.85rem;line-height:1.6}
+.empty{color:var(--muted);text-align:center;padding:8px;font-size:.8rem}
+@media(min-width:480px){.row{font-size:.95rem}.row .z{font-size:.8rem}.col h2{font-size:1rem}}
+</style>
+</head>
+<body>
+<main>
+<h1>WORD HUNT SOLVER</h1>
+
+<section id="s1">
+ <div class="grid" id="grid"></div>
+ <label class="all">or type all 16 letters
+  <input id="all" maxlength="40" autocomplete="off" autocapitalize="characters" spellcheck="false">
+ </label>
+ <div id="err" class="err hidden"></div>
+ <div class="btns">
+  <button class="secondary" id="clear">Clear</button>
+  <button class="primary" id="solve" disabled>Solve</button>
+ </div>
+</section>
+
+<section id="s2" class="hidden">
+ <div class="mini"><div class="g" id="mini"></div><svg id="lines" viewBox="0 0 100 100" preserveAspectRatio="none"></svg></div>
+ <div class="cols">
+  <div class="col"><h2>Common</h2><div id="c1"></div></div>
+  <div class="col"><h2>Less common</h2><div id="c2"></div></div>
+ </div>
+ <p class="foot" id="foot"></p>
+ <div class="btns"><button class="primary" id="newb">New board</button></div>
+</section>
+</main>
+
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)};
+var grid=$("grid"),allI=$("all"),solveB=$("solve"),errB=$("err");
+var cells=[],letters=new Array(16).fill("");
+
+for(var i=0;i<16;i++){
+ var inp=document.createElement("input");
+ inp.maxLength=1;inp.autocomplete="off";inp.autocapitalize="characters";inp.spellcheck=false;
+ inp.setAttribute("aria-label","Tile "+(i+1));
+ inp.dataset.i=i;grid.appendChild(inp);cells.push(inp);
+}
+
+function sync(fromAll){
+ for(var i=0;i<16;i++)cells[i].value=letters[i];
+ if(!fromAll)allI.value=letters.join("");
+ solveB.disabled=letters.some(function(l){return !l});
+}
+function fill(str,start){
+ var s=str.replace(/[^A-Za-z]/g,"").toUpperCase(),k=start;
+ for(var j=0;j<s.length&&k<16;j++,k++)letters[k]=s[j];
+ return k;
+}
+function focus(i){if(i>=0&&i<16){cells[i].focus();cells[i].select()}}
+
+grid.addEventListener("input",function(e){
+ var i=+e.target.dataset.i,v=e.target.value.replace(/[^A-Za-z]/g,"").toUpperCase();
+ if(v.length>1){var k=fill(v,i);sync();focus(Math.min(k,15));return}
+ letters[i]=v;sync();
+ if(v)focus(i+1);
+});
+grid.addEventListener("paste",function(e){
+ var t=(e.clipboardData||window.clipboardData).getData("text");
+ if(t.replace(/[^A-Za-z]/g,"").length>1){
+  e.preventDefault();
+  var s=t.replace(/[^A-Za-z]/g,"");
+  letters=new Array(16).fill("");
+  var k=fill(s,0);sync();focus(Math.min(k,15));
+ }
+});
+grid.addEventListener("keydown",function(e){
+ var i=+e.target.dataset.i;
+ if(e.key==="Backspace"&&!letters[i]&&i>0){e.preventDefault();letters[i-1]="";sync();focus(i-1)}
+ else if(e.key==="ArrowLeft"){e.preventDefault();focus(i-1)}
+ else if(e.key==="ArrowRight"){e.preventDefault();focus(i+1)}
+ else if(e.key==="ArrowUp"){e.preventDefault();focus(i-4)}
+ else if(e.key==="ArrowDown"){e.preventDefault();focus(i+4)}
+ else if(e.key==="Enter"){submit()}
+});
+grid.addEventListener("focusin",function(e){if(e.target.select)e.target.select()});
+
+allI.addEventListener("input",function(){
+ letters=new Array(16).fill("");fill(allI.value,0);
+ allI.value=allI.value.replace(/[^A-Za-z]/g,"").toUpperCase().slice(0,16);
+ sync(true);
+});
+allI.addEventListener("keydown",function(e){if(e.key==="Enter")submit()});
+
+$("clear").onclick=function(){letters=new Array(16).fill("");sync();hideErr();focus(0)};
+solveB.onclick=submit;
+
+function showErr(m){errB.textContent=m;errB.classList.remove("hidden")}
+function hideErr(){errB.classList.add("hidden")}
+
+function submit(){
+ if(solveB.disabled)return;
+ hideErr();solveB.disabled=true;
+ fetch("/api/solve",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({board:letters.join("")})})
+ .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d}})})
+ .then(function(x){
+  if(!x.ok){showErr(x.d.error||"Error");return}
+  show(x.d);
+ })
+ .catch(function(){showErr("Could not reach the server.")})
+ .then(function(){sync()});
+}
+
+var mini=$("mini"),lines=$("lines"),tiles=[];
+function show(d){
+ $("s1").classList.add("hidden");$("s2").classList.remove("hidden");
+ mini.innerHTML="";tiles=[];
+ for(var i=0;i<16;i++){var t=document.createElement("div");t.className="tile";t.textContent=d.board[i];mini.appendChild(t);tiles.push(t)}
+ lines.innerHTML="";
+ col($("c1"),d.common);col($("c2"),d.less_common);
+ $("foot").innerHTML="Common: shown "+d.common.length+" of "+d.common_total+
+  "<br>Less common: shown "+d.less_common.length+" of "+d.less_common_total+
+  "<br>"+d.total_words+" words, "+d.total_points+" points<br>Solved in "+d.solve_ms+" ms";
+}
+var sel=null;
+function col(el,rows){
+ el.innerHTML="";
+ if(!rows.length){el.innerHTML='<div class="empty">none</div>';return}
+ rows.forEach(function(r,i){
+  var d=document.createElement("div");d.className="row";
+  d.innerHTML='<span class="r">'+(i+1)+'.</span><span class="w"></span><span class="p">'+r.points+'</span><span class="z">'+r.zipf.toFixed(1)+'</span>';
+  d.querySelector(".w").textContent=r.word.toUpperCase();
+  d.onclick=function(){
+   if(sel)sel.classList.remove("sel");
+   sel=d;d.classList.add("sel");highlight(r.path);
+  };
+  el.appendChild(d);
+ });
+}
+function center(i){return [((i%4)+0.5)*25,(Math.floor(i/4)+0.5)*25]}
+function highlight(path){
+ tiles.forEach(function(t){t.className="tile"});
+ path.forEach(function(c,k){tiles[c].className="tile "+(k===0?"start":"on")});
+ // grid padding is ~8px of 200px; map cells to the inner area
+ var pts=path.map(function(c){var p=center(c);return (4+p[0]*0.92)+","+(4+p[1]*0.92)}).join(" ");
+ lines.innerHTML='<polyline points="'+pts+'" fill="none" stroke="#3b2412" stroke-opacity=".55" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+}
+$("newb").onclick=function(){
+ $("s2").classList.add("hidden");$("s1").classList.remove("hidden");sel=null;sync();focus(0);
+};
+sync();focus(0);
+})();
+</script>
+</body>
+</html>

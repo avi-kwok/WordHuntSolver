@@ -34,7 +34,15 @@ Frequency via `wordfreq.zipf_frequency(word, 'en')`.
 
 Each tier sorts by length desc, then zipf desc, then alphabetical. Top 30 per tier shown; totals cover all words with zipf >= 3.
 
+## Web UI
+Local only (binds 127.0.0.1), stdlib only, no extra dependencies.
+```
+.venv/bin/python server.py [--port 8000]
+```
+Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 16 letters), press Solve, then click a result row to see its path on the mini board. API: `POST /api/solve` with `{"board": "<16 letters>"}` returns the top 30 per tier with paths plus totals. Tests: `.venv/bin/python test_server.py`.
+
 ## Version history
 - **v1**: Trie + DFS solver, dictionary + frequency for reasonable results
 - **v2+v3**: Sorted word results + built trie at startup -> ~1.9s to ~13ms per board
 - **v4**: Filter dictionary to include zipf >= 3 words only -> 17k words + ~5 ms per board
+- **v5**: Simple UI

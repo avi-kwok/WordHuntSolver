@@ -47,27 +47,35 @@ def build_trie(words):
     return root
 
 
-def solve(board, trie):
-    """Return set of words in prebuilt `trie` found on `board`."""
+def solve_paths(board, trie):
+    """Map each word found on `board` to its first path (cell indices 0-15)."""
     board = board.lower()
     nbrs = neighbors()
-    found = set()
+    found = {}
+    path = []
 
     def dfs(i, node, mask):
         node = node.get(board[i])
         if node is None:
             return
         mask |= 1 << i
+        path.append(i)
         word = node.get(END)
-        if word is not None:
-            found.add(word)
+        if word is not None and word not in found:
+            found[word] = list(path)
         for j in nbrs[i]:
             if not mask & (1 << j):
                 dfs(j, node, mask)
+        path.pop()
 
     for i in range(CELLS):
         dfs(i, trie, 0)
     return found
+
+
+def solve(board, trie):
+    """Return set of words in prebuilt `trie` found on `board`."""
+    return set(solve_paths(board, trie))
 
 
 def score(word):
