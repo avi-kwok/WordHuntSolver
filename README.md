@@ -56,3 +56,4 @@ Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 1
 - **v7**: Improved cutoff for better results
 - **v8**: Excluded proper nouns + created blocklist
 - **v9**: Grouped spelling rhymes for faster inputs
+- **v10**: Bug fixes

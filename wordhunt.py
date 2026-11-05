@@ -186,14 +186,29 @@ def resolve_chains(derived_map):
     return out
 
 
-def generate_derived(bases, freq_dict, min_zipf=DERIVED_MIN_ZIPF):
-    """Map inflected word -> base. Keeps 3-16 letter forms with zipf >= min_zipf."""
+def _tier_idx(f):
+    """0 common, 1 less common, 2 rare, from a wordfreq frequency."""
+    if f >= 10 ** (COMMON_MIN - 9):
+        return 0
+    return 1 if f >= 10 ** (LESS_MIN - 9) else 2
+
+
+def generate_derived(bases, freq_dict, min_zipf=DERIVED_MIN_ZIPF, exclude=frozenset()):
+    """Map inflected word -> base. Keeps 3-16 letter forms with zipf >= min_zipf.
+
+    Candidates in `exclude` (e.g. capitalized-only dictionary entries) are
+    dropped. A candidate that is itself a base maps to root B only if B's
+    tier is the same or more common than its own.
+    """
     cutoff = 10 ** (min_zipf - 9)
     best = {}
     for b in bases:
         fb = freq_dict.get(b, 0)
         for cand in inflections(b):
-            if not 3 <= len(cand) <= CELLS or freq_dict.get(cand, 0) < cutoff:
+            fc = freq_dict.get(cand, 0)
+            if not 3 <= len(cand) <= CELLS or fc < cutoff or cand in exclude:
+                continue
+            if cand in bases and _tier_idx(fb) > _tier_idx(fc):
                 continue
             if cand not in best or fb > best[cand][0]:
                 best[cand] = (fb, b)
@@ -383,7 +398,7 @@ def startup(blocklist_path=BLOCKLIST_PATH):
     proper = len(filter_common({w for w in lowered - all_words if size_ok(w)}, freq, RARE_MIN_ZIPF))
     sized = {w for w in all_words if size_ok(w)}
     bases = filter_common(sized, freq, RARE_MIN_ZIPF)
-    derived_map = generate_derived(bases, freq)
+    derived_map = generate_derived(bases, freq, exclude=lowered - all_words)
     blocked = load_blocklist(blocklist_path)
     n_blocked = len((bases | set(derived_map)) & blocked)
     bases -= blocked

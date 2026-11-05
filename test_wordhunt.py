@@ -266,6 +266,27 @@ class TestInflections(unittest.TestCase):
         d = wh.generate_derived({"box", "boxe"}, {"box": 1e-3, "boxe": 1e-6, "boxer": 1e-5})
         self.assertEqual(d["boxer"], "box")
 
+    def test_cap_only_excluded(self):
+        t = 10 ** (wh.DERIVED_MIN_ZIPF - 9)
+        freq = {"lar": 1e-6, "lars": 1e-4, "lared": t}
+        d = wh.generate_derived({"lar"}, freq, exclude={"lars"})
+        self.assertEqual(d, {"lared": "lar"})
+
+    def test_base_not_captured_by_rarer_root(self):
+        freq = {"splint": 10 ** (2.7 - 9), "splinter": 10 ** (3.3 - 9),
+                "splints": 10 ** (2.6 - 9), "great": 10 ** (5.9 - 9),
+                "greater": 10 ** (4.9 - 9)}
+        d = wh.generate_derived({"splint", "splinter", "great", "greater"}, freq)
+        self.assertNotIn("splinter", d)
+        self.assertEqual(d["splints"], "splint")  # non-base form follows root
+        self.assertEqual(d["greater"], "great")   # more common root still nests
+        self.assertNotIn("great", d)
+
+    def test_chain_with_tier_rule(self):
+        freq = {"great": 1e-3, "greater": 1e-4, "greaterx": 1e-5, "greatest": 1e-5}
+        d = wh.generate_derived({"great", "greater"}, freq)
+        self.assertEqual(d["greatest"], "great")
+
     def test_chain_and_self(self):
         self.assertEqual(wh.resolve_chains({"a": "b", "b": "c"}), {"a": "c", "b": "c"})
         self.assertNotIn("x", wh.resolve_chains({"x": "x"}))
