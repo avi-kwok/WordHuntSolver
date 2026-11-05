@@ -36,7 +36,7 @@ Frequency via `wordfreq.zipf_frequency(word, 'en')`.
 - RARE: 2.5 <= zipf < 3.0, words of 4+ letters only (bases, nested forms and standalone forms alike). A 3-letter rare base counts as not found, so its 4+ letter forms appear as standalone "from base" rows.
 - zipf < 2.5: dropped (not shown, not counted)
 
-Rhyme grouping: within each tier, top-level rows (bases and standalone forms) are grouped by `rhyme_key(word)`, the word minus its leading consonant onset (`y` is a consonant only first; `u` after a leading `q` joins the onset; vowel-initial or all-consonant words keep the whole word). Groups order by size desc, longest member desc, best zipf desc, key; rows within a group by length desc, zipf desc, alphabetical. Nested forms do not affect grouping. Rank numbers run continuously and the 30-line cap applies after grouping (a group may be cut). The UI shades groups of 2+ and tags the first row (e.g. `-ONG x3`).
+Rhyme grouping: within each tier, top-level rows (bases and standalone forms) are grouped by `rhyme_key(word)`, the word minus its leading consonant onset (`y` is a consonant only first; `u` after a leading `q` joins the onset; vowel-initial or all-consonant words keep the whole word). Groups order by estimated points per second of entry time: `group_rate = group_points / group_time`, over the full group (top-level rows plus every nested form, before the 30-line cap). `group_points` is the sum of `score()`; `group_time` charges the group's first row `FIND_FIRST_S (1.0) + SWIPE_PER_LETTER_S (0.15) * len` and every other word (other rows, all nested forms) `FIND_NEXT_S (0.4) + 0.15 * len`. Ties: best row's points desc, group size desc, key. Rows within a group: length desc, zipf desc, alphabetical. Nested forms do not change which group a row is in, only its rate. Rank numbers run continuously and the 30-line cap applies after grouping (a group may be cut). The UI shades groups of 2+ and tags the first row with its rhyme and rate (e.g. `-ONG x3 · 512/s`; single rows get just `512/s`).
 
 Each column shows the top 30 lines; totals (words and points) cover all three tiers.
 
@@ -45,7 +45,7 @@ Local only (binds 127.0.0.1), stdlib only, no extra dependencies.
 ```
 .venv/bin/python server.py [--port 8000]
 ```
-Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 16 letters), press Solve, then click a result row to see its path on the mini board. API: `POST /api/solve` with `{"board": "<16 letters>"}` returns `common`, `less_common` and `rare` (top 30 lines each, rows carry `rhyme` and `group_size`) with paths, plus `*_total` counts and overall totals. Tests: `.venv/bin/python test_server.py`.
+Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 16 letters), press Solve, then click a result row to see its path on the mini board. API: `POST /api/solve` with `{"board": "<16 letters>"}` returns `common`, `less_common` and `rare` (top 30 lines each, rows carry `rhyme`, `group_size`, `group_rate`, `group_points`, `group_time`) with paths, plus `*_total` counts and overall totals. Tests: `.venv/bin/python test_server.py`.
 
 ## Version history
 - **v1**: Trie + DFS solver, dictionary + frequency for reasonable results
@@ -57,3 +57,4 @@ Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 1
 - **v8**: Excluded proper nouns + created blocklist
 - **v9**: Grouped spelling rhymes for faster inputs
 - **v10**: Bug fixes
+- **v11**: Added points-per-second ranking for even better inputs!

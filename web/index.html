@@ -186,7 +186,8 @@ function col(el,rows){
   d.querySelector(".r").textContent=rank;
   var w=d.querySelector(".w");w.textContent=r.word.toUpperCase();
   if(base){var t=document.createElement("span");t.className="tag";t.textContent="from "+base.toUpperCase();w.appendChild(t)}
-  if(first&&r.group_size>=2){var g=document.createElement("span");g.className="gt";g.textContent="-"+r.rhyme.toUpperCase()+" \u00d7"+r.group_size;w.appendChild(g)}
+  if(first&&(r.group_size>=2||r.group_rate!=null)){var g=document.createElement("span");g.className="gt";
+   g.textContent=(r.group_size>=2?"-"+r.rhyme.toUpperCase()+" \u00d7"+r.group_size+" \u00b7 ":"")+Math.round(r.group_rate)+"/s";w.appendChild(g)}
   d.onclick=function(){
    if(sel)sel.classList.remove("sel");
    sel=d;d.classList.add("sel");highlight(r.path);

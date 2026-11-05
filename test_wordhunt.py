@@ -77,18 +77,18 @@ class TestRank(unittest.TestCase):
 
     def test_sort(self):
         c, _, _ = self._rank({"abcd": 5.5, "zzz": 6.0, "aaa": 6.0, "bbb": 5.1, "wxyz": 5.9})
-        self.assertEqual([r["word"] for r in c], ["wxyz", "abcd", "aaa", "zzz", "bbb"])
+        self.assertEqual([r["word"] for r in c], ["abcd", "wxyz", "aaa", "bbb", "zzz"])  # equal rates: key decides, not zipf
 
     def test_same_length_zipf_decides(self):
         c, _, _ = self._rank({"zzzz": 6.0, "aaaa": 5.5})
-        self.assertEqual([r["word"] for r in c], ["zzzz", "aaaa"])
+        self.assertEqual([r["word"] for r in c], ["aaaa", "zzzz"])  # equal rate: key, not zipf
 
-    def test_form_nested_points_dont_reorder(self):
+    def test_form_nested_points_raise_group_rate(self):
         t = {"plan": 5.5, "plans": 5.0, "zzzz": 5.8}
         c, _, _ = self._rank(t, {"plans": "plan"})
-        self.assertEqual([r["word"] for r in c], ["zzzz", "plan"])
-        self.assertEqual(c[1]["forms"], ["plans"])
-        self.assertIsNone(c[1]["base"])
+        self.assertEqual([r["word"] for r in c], ["plan", "zzzz"])  # 1200/2.75 beats 400/1.6
+        self.assertEqual(c[0]["forms"], ["plans"])
+        self.assertIsNone(c[0]["base"])
 
     def test_standalone_form(self):
         c, l, _ = self._rank({"plans": 4.0, "plan": 5.5}, {"plans": "plan"}, found={"plans"})
@@ -182,9 +182,10 @@ class TestRareAndGrouping(unittest.TestCase):
     def test_biggest_group_first(self):
         t = {"bong": 5.0, "dong": 5.0, "tong": 5.0, "party": 6.0, "zebra": 6.0}
         c, _, _ = self._rank(t)
-        self.assertEqual([x["word"] for x in c], ["bong", "dong", "tong", "party", "zebra"])
-        self.assertEqual([x["group_size"] for x in c], [3, 3, 3, 1, 1])
-        self.assertEqual({x["rhyme"] for x in c[:3]}, {"ong"})
+        # 5-letter singles: 800/1.75 = 457/s beat the ong trio: 1200/3.6 = 333/s
+        self.assertEqual([x["word"] for x in c], ["party", "zebra", "bong", "dong", "tong"])
+        self.assertEqual([x["group_size"] for x in c], [1, 1, 3, 3, 3])
+        self.assertEqual({x["rhyme"] for x in c[2:]}, {"ong"})
 
     def test_size_tie_longest_member(self):
         t = {"bat": 5.0, "cat": 5.0, "cuts": 5.0, "puts": 5.0}
@@ -198,9 +199,10 @@ class TestRareAndGrouping(unittest.TestCase):
         self.assertEqual([x["group_size"] for x in c], [4] * 4)
 
     def test_group_ties_zipf_then_key(self):
+        # equal rate, points, size: zipf no longer matters, key decides
         t = {"bat": 5.0, "cat": 5.0, "bog": 6.0, "dog": 6.0}
         c, _, _ = self._rank(t)
-        self.assertEqual([x["word"] for x in c], ["bog", "dog", "bat", "cat"])
+        self.assertEqual([x["word"] for x in c], ["bat", "cat", "bog", "dog"])
         t = {"bat": 5.0, "cat": 5.0, "bog": 5.0, "dog": 5.0}
         c, _, _ = self._rank(t)
         self.assertEqual([x["rhyme"] for x in c], ["at", "at", "og", "og"])
@@ -217,6 +219,34 @@ class TestRareAndGrouping(unittest.TestCase):
         c, _, _ = self._rank(t, {"plans": "plan"}, found={"plans", "clans"})
         self.assertEqual({x["rhyme"] for x in c}, {"ans"})
         self.assertEqual(c[0]["group_size"], 2)
+
+    def test_group_rate_exact(self):
+        t = {"ring": 5.0, "sing": 5.0, "rings": 5.0}
+        c, _, _ = self._rank(t, {"rings": "ring"})
+        self.assertEqual([x["word"] for x in c], ["ring", "sing"])
+        self.assertEqual(c[0]["forms"], ["rings"])
+        for x in c:
+            self.assertEqual(x["group_points"], 1600)
+            self.assertAlmostEqual(x["group_time"], 3.75)
+            self.assertAlmostEqual(x["group_rate"], 1600 / 3.75)
+            self.assertEqual(round(x["group_rate"], 2), 426.67)
+
+    def test_long_single_beats_short_pair(self):
+        t = {"abcdef": 5.0, "bat": 5.0, "cat": 5.0}
+        c, _, _ = self._rank(t)
+        # 1400/1.9 = 737 vs 200/2.3 = 87
+        self.assertEqual([x["word"] for x in c], ["abcdef", "bat", "cat"])
+
+    def test_equal_rate_tiebreak_best_row_points(self):
+        # FIRST=1, no other cost: rate = group points. Single "zork" (400)
+        # ties the 4x3-letter "at" group (400); best row points break it.
+        t = {"zork": 5.0, "bat": 5.0, "cat": 5.0, "fat": 5.0, "hat": 5.0}
+        with mock.patch.object(wh, "FIND_FIRST_S", 1.0), \
+             mock.patch.object(wh, "FIND_NEXT_S", 0.0), \
+             mock.patch.object(wh, "SWIPE_PER_LETTER_S", 0.0):
+            c, _, _ = self._rank(t)
+        self.assertEqual([x["group_rate"] for x in c], [400.0] * 5)
+        self.assertEqual([x["word"] for x in c], ["zork", "bat", "cat", "fat", "hat"])
 
     def test_rare_truncation_cap(self):
         rows = [{"word": f"w{i}x", "base": None, "forms": [f"w{i}xs"] * 2} for i in range(20)]

@@ -16,6 +16,12 @@ RARE_MIN_ZIPF = 2.5
 RARE_MIN_LEN = 4
 DERIVED_MIN_ZIPF = 2.0
 TOP_N = 30
+# Entry-time model for ranking rhyme groups by points per second: the first
+# word of a group costs FIND_FIRST_S (spot + plan it), each later word in the
+# same group FIND_NEXT_S (pattern already known), plus a swipe cost per letter.
+FIND_FIRST_S = 1.0   # spot + plan the first word of a rhyme group
+FIND_NEXT_S = 0.4    # each later word in the same group (pattern already known)
+SWIPE_PER_LETTER_S = 0.15
 _SCORES = {3: 100, 4: 400, 5: 800, 6: 1400, 7: 1800, 8: 2200}
 
 
@@ -232,11 +238,22 @@ def rhyme_key(word):
     return word[i:]
 
 
+def group_stats(words):
+    """(points, seconds) for a rhyme group; `words` = ordered group words,
+    first = best top-level word, then every other word incl. all nested forms."""
+    points = sum(score(w) for w in words)
+    t = sum(SWIPE_PER_LETTER_S * len(w) for w in words)
+    t += FIND_FIRST_S + FIND_NEXT_S * (len(words) - 1)
+    return points, t
+
+
 def group_rows(rows):
     """Order top-level rows of one tier into contiguous rhyme groups.
 
-    Sets row["rhyme"] and row["group_size"]. Groups: size desc, longest
-    member desc, best member zipf desc, key. Rows in a group: (-len, -zipf, word).
+    Sets row["rhyme"], row["group_size"], row["group_points"],
+    row["group_time"], row["group_rate"] (points per second over the full
+    group, nested forms included). Groups: rate desc, best row points desc,
+    size desc, key. Rows in a group: (-len, -zipf, word).
     """
     key = lambda r: (-len(r["word"]), -zipf(r["word"]), r["word"])
     groups = {}
@@ -245,10 +262,15 @@ def group_rows(rows):
     ordered = []
     for k, g in groups.items():
         g.sort(key=key)
+        words = [g[0]["word"]] + list(g[0].get("forms", []))
+        for r in g[1:]:
+            words += [r["word"]] + list(r.get("forms", []))
+        pts, secs = group_stats(words)
+        rate = pts / secs
         for r in g:
             r["rhyme"], r["group_size"] = k, len(g)
-        ordered.append((-len(g), -len(g[0]["word"]),
-                        -max(zipf(r["word"]) for r in g), k, g))
+            r["group_points"], r["group_time"], r["group_rate"] = pts, secs, rate
+        ordered.append((-rate, -score(g[0]["word"]), -len(g), k, g))
     ordered.sort(key=lambda t: t[:4])
     return [r for t in ordered for r in t[4]]
 
@@ -261,7 +283,8 @@ def rank(found, derived_map=None):
     with `base` set. Tier is decided by the base's zipf (< 2.5 dropped).
     Rare (2.5 <= zipf < 3) shows only words of 4+ letters; a 3-letter rare
     base counts as not found, so its forms stand alone. Tiers are grouped
-    by rhyme_key over top-level rows; forms sort (-len, -zipf, word).
+    by rhyme_key over top-level rows (group order: see group_rows); forms
+    sort (-len, -zipf, word).
     """
     dm = derived_map or {}
     found = set(found)

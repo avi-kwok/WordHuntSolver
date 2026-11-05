@@ -28,6 +28,9 @@ def build_result(board, trie, derived_map=None):
             d["base"] = r["base"]
             d["rhyme"] = r["rhyme"]
             d["group_size"] = r["group_size"]
+            d["group_rate"] = round(r["group_rate"], 1)
+            d["group_points"] = r["group_points"]
+            d["group_time"] = round(r["group_time"], 2)
             d["forms"] = [item(f) for f in r["forms"]]
             out.append(d)
         return out
