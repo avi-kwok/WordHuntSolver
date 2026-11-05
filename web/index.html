@@ -38,6 +38,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .col h2{margin:0 0 6px;font-size:.9rem;text-align:center}
 .row{display:grid;grid-template-columns:1.6em 1fr auto auto;gap:5px;align-items:baseline;padding:5px 4px;border-radius:8px;cursor:pointer;font-size:.8rem}
 .row:hover{background:#f3e2bd}
+.row.sub{padding-left:1.4em;font-size:.9em;opacity:.85}
+.row.sub .w{font-weight:700}
+.tag{font-size:.65em;font-weight:700;color:var(--muted);margin-left:4px;text-transform:none;letter-spacing:0}
 .row.sel{background:var(--tile-hi)}
 .row .r{color:var(--muted);text-align:right}
 .row .w{font-weight:900;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis}
@@ -159,23 +162,31 @@ function show(d){
  for(var i=0;i<16;i++){var t=document.createElement("div");t.className="tile";t.textContent=d.board[i];mini.appendChild(t);tiles.push(t)}
  lines.innerHTML="";
  col($("c1"),d.common);col($("c2"),d.less_common);
- $("foot").innerHTML="Common: shown "+d.common.length+" of "+d.common_total+
-  "<br>Less common: shown "+d.less_common.length+" of "+d.less_common_total+
+ $("foot").innerHTML="Common: shown "+countLines(d.common)+" of "+d.common_total+
+  "<br>Less common: shown "+countLines(d.less_common)+" of "+d.less_common_total+
   "<br>"+d.total_words+" words, "+d.total_points+" points<br>Solved in "+d.solve_ms+" ms";
 }
 var sel=null;
+function countLines(rows){return rows.reduce(function(a,r){return a+1+r.forms.length},0)}
 function col(el,rows){
  el.innerHTML="";
  if(!rows.length){el.innerHTML='<div class="empty">none</div>';return}
- rows.forEach(function(r,i){
-  var d=document.createElement("div");d.className="row";
-  d.innerHTML='<span class="r">'+(i+1)+'.</span><span class="w"></span><span class="p">'+r.points+'</span><span class="z">'+r.zipf.toFixed(1)+'</span>';
-  d.querySelector(".w").textContent=r.word.toUpperCase();
+ var n=0;
+ function add(r,cls,rank,base){
+  var d=document.createElement("div");d.className="row"+cls;
+  d.innerHTML='<span class="r"></span><span class="w"></span><span class="p">'+r.points+'</span><span class="z">'+r.zipf.toFixed(1)+'</span>';
+  d.querySelector(".r").textContent=rank;
+  var w=d.querySelector(".w");w.textContent=r.word.toUpperCase();
+  if(base){var t=document.createElement("span");t.className="tag";t.textContent="from "+base.toUpperCase();w.appendChild(t)}
   d.onclick=function(){
    if(sel)sel.classList.remove("sel");
    sel=d;d.classList.add("sel");highlight(r.path);
   };
   el.appendChild(d);
+ }
+ rows.forEach(function(r){
+  add(r,"",++n+".",r.base);
+  r.forms.forEach(function(f){add(f," sub","+",null)});
  });
 }
 function center(i){return [((i%4)+0.5)*25,(Math.floor(i/4)+0.5)*25]}

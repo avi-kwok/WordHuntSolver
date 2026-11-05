@@ -23,6 +23,9 @@ Board = 16 letters, row-major (left to right, top to bottom), case-insensitive.
 3. Startup prefilter: keep only words with zipf >= 3 (via wordfreq's frequency dict) before building the trie.
 4. DFS from each cell, walking the trie in lockstep; visited cells tracked as a 16-bit bitmask; prune as soon as the trie has no child for the next letter.
 
+## Inflected forms
+web2 lacks most plurals and inflections. At startup, for every base word (web2, 3-16 letters, zipf >= 3) the program generates candidate forms (-s/-es, -ed, -ing, -er/-est/-ers, -ly, with spelling variants such as e-drop, y to ies, consonant doubling) and keeps those whose wordfreq frequency gives zipf >= 1 (checked against `get_frequency_dict`, no per-word lookup). Forms are added to the trie and mapped to a base (highest-frequency base wins; chains resolve to the root). In results a found form nests under its base's row, or stands alone labelled with its base if the base is not on the board. Tier is decided by the base's zipf. Each column shows at most 30 lines (base rows plus forms, in order; a group may be cut partway); totals count every found word.
+
 ## Scoring
 3=100, 4=400, 5=800, 6=1400, 7=1800, 8=2200, then +400 per letter beyond 8.
 
@@ -46,3 +49,4 @@ Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 1
 - **v2+v3**: Sorted word results + built trie at startup -> ~1.9s to ~13ms per board
 - **v4**: Filter dictionary to include zipf >= 3 words only -> 17k words + ~5 ms per board
 - **v5**: Simple UI
+- **v6**: Grouped suffix/prefix words

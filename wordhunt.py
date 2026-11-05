@@ -11,6 +11,7 @@ END = "$"
 COMMON_MIN = 5.0
 MIN_ZIPF = 3.0
 LESS_MIN = MIN_ZIPF
+DERIVED_MIN_ZIPF = 1.0
 TOP_N = 30
 _SCORES = {3: 100, 4: 400, 5: 800, 6: 1400, 7: 1800, 8: 2200}
 
@@ -102,22 +103,138 @@ def filter_common(words, freq_dict, min_zipf=MIN_ZIPF):
     return {w for w in words if freq_dict.get(w, 0) >= cutoff}
 
 
-def rank(found):
-    """Return (common, less_common); zipf picks tier (< 3 dropped).
+_VOWELS = set("aeiou")
 
-    Each tier sorts by length desc, zipf desc, then alphabetical.
+
+def _cons_y(w):
+    return w.endswith("y") and len(w) > 1 and w[-2] not in _VOWELS
+
+
+def inflections(w):
+    """Every plausible suffixed spelling of `w`; the frequency check prunes."""
+    c = set()
+    dbl = w + w[-1]
+    # -s / -es
+    c.add(w + "s")
+    if w.endswith(("s", "x", "z", "ch", "sh")):
+        c.add(w + "es")
+    if _cons_y(w):
+        c.add(w[:-1] + "ies")
+    # -ed
+    c.add(w + "ed")
+    if w.endswith("e"):
+        c.add(w + "d")
+    if _cons_y(w):
+        c.add(w[:-1] + "ied")
+    c.add(dbl + "ed")
+    # -ing
+    c.add(w + "ing")
+    if w.endswith("e") and not w.endswith("ee"):
+        c.add(w[:-1] + "ing")
+    if w.endswith("ie"):
+        c.add(w[:-2] + "ying")
+    c.add(dbl + "ing")
+    # -er / -est (and -ers)
+    ers = {w + "er", dbl + "er"}
+    ests = {w + "est", dbl + "est"}
+    if w.endswith("e"):
+        ers.add(w + "r")
+        ests.add(w + "st")
+    if _cons_y(w):
+        ers.add(w[:-1] + "ier")
+        ests.add(w[:-1] + "iest")
+    c |= ers | ests | {x + "s" for x in ers}
+    # -ly
+    c.add(w + "ly")
+    if _cons_y(w):
+        c.add(w[:-1] + "ily")
+    if w.endswith("le"):
+        c.add(w[:-1] + "y")
+    if w.endswith("ic"):
+        c.add(w + "ally")
+    c.discard(w)
+    return c
+
+
+def resolve_chains(derived_map):
+    """Point every word at its root (A->B, B->C gives A->C); no self maps."""
+    out = {}
+    for w, b in derived_map.items():
+        seen = {w}
+        while b in derived_map and b not in seen:
+            seen.add(b)
+            b = derived_map[b]
+        if b not in seen:
+            out[w] = b
+    return out
+
+
+def generate_derived(bases, freq_dict, min_zipf=DERIVED_MIN_ZIPF):
+    """Map inflected word -> base. Keeps 3-16 letter forms with zipf >= min_zipf."""
+    cutoff = 10 ** (min_zipf - 9)
+    best = {}
+    for b in bases:
+        fb = freq_dict.get(b, 0)
+        for cand in inflections(b):
+            if not 3 <= len(cand) <= CELLS or freq_dict.get(cand, 0) < cutoff:
+                continue
+            if cand not in best or fb > best[cand][0]:
+                best[cand] = (fb, b)
+    return resolve_chains({w: b for w, (_, b) in best.items()})
+
+
+def rank(found, derived_map=None):
+    """Return (common, less_common) lists of rows.
+
+    Row: {"word", "base", "forms"}. Forms found with their base nest under it;
+    a form found without its base is its own row with `base` set. Tier is
+    decided by the base's zipf (< 3 dropped). Rows sort by length desc,
+    zipf desc, then alphabetical; forms sort the same way under their base.
     """
-    common, less = [], []
+    dm = derived_map or {}
+    found = set(found)
+    rows = {}
+    nested = {}
     for w in found:
-        z = zipf(w)
-        if z >= COMMON_MIN:
-            common.append((w, z))
-        elif z >= LESS_MIN:
-            less.append((w, z))
-    key = lambda t: (-len(t[0]), -t[1], t[0])
-    common.sort(key=key)
-    less.sort(key=key)
-    return [w for w, _ in common], [w for w, _ in less]
+        root = dm.get(w)
+        if root is None:
+            rows[w] = {"word": w, "base": None, "forms": []}
+        elif root in found:
+            nested.setdefault(root, []).append(w)
+        else:
+            rows[w] = {"word": w, "base": root, "forms": []}
+    key = lambda w: (-len(w), -zipf(w), w)
+    common, less = [], []
+    for w, row in rows.items():
+        z = zipf(row["base"] or w)
+        if z < LESS_MIN:
+            continue
+        row["forms"] = sorted(nested.get(w, []), key=key)
+        (common if z >= COMMON_MIN else less).append(row)
+    common.sort(key=lambda r: key(r["word"]))
+    less.sort(key=lambda r: key(r["word"]))
+    return common, less
+
+
+def truncate_rows(rows, limit=TOP_N):
+    """First `limit` display lines (base rows + forms) of a tier.
+
+    A group may be cut partway: its base row stays, remaining forms drop.
+    Returns (rows, shown_line_count); input rows are not modified.
+    """
+    out, left = [], limit
+    for r in rows:
+        if left <= 0:
+            break
+        forms = r["forms"][:left - 1]
+        out.append({**r, "forms": forms})
+        left -= 1 + len(forms)
+    return out, limit - left
+
+
+def tier_words(rows):
+    """Every word in a tier, forms included."""
+    return [w for r in rows for w in [r["word"]] + r["forms"]]
 
 
 def parse_board(text):
@@ -131,11 +248,20 @@ def parse_board(text):
     return s.upper()
 
 
-def _col(tier, i):
-    if i >= len(tier):
-        return ""
-    w = tier[i]
-    return f"{i + 1:2d}. {w.upper():<16} {score(w):>5} {zipf(w):>4.1f}"
+def _trunc(text, n):
+    return text if len(text) <= n else text[:n - 1] + "~"
+
+
+def _lines(rows):
+    """Display lines (31 cols) for a tier's top-level rows and their forms."""
+    out = []
+    for i, r in enumerate(rows):
+        w = r["word"]
+        label = w.upper() + (f" ({r['base']})" if r["base"] else "")
+        out.append(f"{i + 1:2d}. {_trunc(label, 16):<16} {score(w):>5} {zipf(w):>4.1f}")
+        for f in r["forms"]:
+            out.append(f"    + {_trunc(f.upper(), 14):<14} {score(f):>5} {zipf(f):>4.1f}")
+    return out
 
 
 def format_output(board, common, less, ms):
@@ -146,38 +272,48 @@ def format_output(board, common, less, ms):
     width = 31
     lines.append(f"{'COMMON (zipf >= 5)':<{width}}  LESS COMMON (zipf 3-5)")
     lines.append(f"{'-' * width}  {'-' * width}")
-    a, b = common[:TOP_N], less[:TOP_N]
-    for i in range(max(len(a), len(b))):
-        lines.append(f"{_col(a, i):<{width}}  {_col(b, i)}".rstrip())
+    a, na = truncate_rows(common)
+    b, nb = truncate_rows(less)
+    la, lb = _lines(a), _lines(b)
+    for i in range(max(len(la), len(lb))):
+        left = la[i] if i < len(la) else ""
+        right = lb[i] if i < len(lb) else ""
+        lines.append(f"{left:<{width}}  {right}".rstrip())
     lines.append("")
-    lines.append(f"Common: shown {len(a)} of {len(common)}")
-    lines.append(f"Less common: shown {len(b)} of {len(less)}")
-    total = sum(score(w) for w in common + less)
-    lines.append(f"Total: {len(common) + len(less)} words, {total} points")
+    words = tier_words(common) + tier_words(less)
+    lines.append(f"Common: shown {na} of {len(tier_words(common))}")
+    lines.append(f"Less common: shown {nb} of {len(tier_words(less))}")
+    total = sum(score(w) for w in words)
+    lines.append(f"Total: {len(words)} words, {total} points")
     lines.append(f"Solve time: {ms:.1f} ms")
     return "\n".join(lines)
 
 
-def run(board, trie):
+def run(board, trie, derived_map):
     t = time.perf_counter()
-    common, less = rank(solve(board, trie))
+    common, less = rank(solve(board, trie), derived_map)
     ms = (time.perf_counter() - t) * 1000
     print(format_output(board, common, less, ms))
 
 
 def startup():
-    """Load dictionary, build trie once, warm up wordfreq; return trie."""
+    """Load dictionary, build trie once, warm up wordfreq.
+
+    Returns (trie, derived_map).
+    """
     t = time.perf_counter()
     from wordfreq import get_frequency_dict
     zipf("the")
+    freq = get_frequency_dict("en")
     all_words = load_dictionary()
     sized = {w for w in all_words if 3 <= len(w) <= CELLS}
-    words = filter_common(sized, get_frequency_dict("en"))
-    trie = build_trie(words)
+    bases = filter_common(sized, freq)
+    derived_map = generate_derived(bases, freq)
+    trie = build_trie(bases | set(derived_map))
     ms = (time.perf_counter() - t) * 1000
-    print(f"Loaded {len(words)} of {len(sized)} words "
-          f"(zipf >= {MIN_ZIPF:g}) in {ms:.0f} ms")
-    return trie
+    print(f"Loaded {len(bases)} base + {len(derived_map)} derived words "
+          f"(zipf >= {MIN_ZIPF:g}; forms >= {DERIVED_MIN_ZIPF:g}) in {ms:.0f} ms")
+    return trie, derived_map
 
 
 def main(argv):
@@ -187,9 +323,9 @@ def main(argv):
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
-        run(board, startup())
+        run(board, *startup())
         return 0
-    trie = startup()
+    trie, derived_map = startup()
     while True:
         try:
             raw = input("Board: ")
@@ -202,7 +338,7 @@ def main(argv):
         except ValueError as e:
             print(f"Error: {e}")
             continue
-        run(board, trie)
+        run(board, trie, derived_map)
     return 0
 
 

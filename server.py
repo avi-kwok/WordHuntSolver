@@ -12,30 +12,39 @@ MAX_BODY = 1024
 INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
 
 
-def build_result(board, trie):
+def build_result(board, trie, derived_map=None):
     t = time.perf_counter()
     paths = wh.solve_paths(board, trie)
-    common, less = wh.rank(paths)
+    common, less = wh.rank(paths, derived_map)
+
+    def item(w):
+        return {"word": w, "points": wh.score(w),
+                "zipf": round(wh.zipf(w), 1), "path": paths[w]}
 
     def rows(tier):
-        return [{"word": w, "points": wh.score(w),
-                 "zipf": round(wh.zipf(w), 1), "path": paths[w]}
-                for w in tier[:wh.TOP_N]]
+        out = []
+        for r in wh.truncate_rows(tier)[0]:
+            d = item(r["word"])
+            d["base"] = r["base"]
+            d["forms"] = [item(f) for f in r["forms"]]
+            out.append(d)
+        return out
 
+    words = wh.tier_words(common) + wh.tier_words(less)
     result = {
         "board": board,
         "common": rows(common),
         "less_common": rows(less),
-        "common_total": len(common),
-        "less_common_total": len(less),
-        "total_words": len(common) + len(less),
-        "total_points": sum(wh.score(w) for w in common + less),
+        "common_total": len(wh.tier_words(common)),
+        "less_common_total": len(wh.tier_words(less)),
+        "total_words": len(words),
+        "total_points": sum(wh.score(w) for w in words),
     }
     result["solve_ms"] = round((time.perf_counter() - t) * 1000, 1)
     return result
 
 
-def make_handler(trie):
+def make_handler(trie, derived_map=None):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, ctype="application/json"):
             if not isinstance(body, bytes):
@@ -71,7 +80,7 @@ def make_handler(trie):
                 board = wh.parse_board(str(data.get("board", "")))
             except (ValueError, UnicodeDecodeError) as e:
                 return self._send(400, {"error": str(e)})
-            self._send(200, build_result(board, trie))
+            self._send(200, build_result(board, trie, derived_map))
 
         def log_message(self, *args):
             pass
@@ -79,16 +88,16 @@ def make_handler(trie):
     return Handler
 
 
-def make_server(trie, port=8000):
-    return ThreadingHTTPServer(("127.0.0.1", port), make_handler(trie))
+def make_server(trie, port=8000, derived_map=None):
+    return ThreadingHTTPServer(("127.0.0.1", port), make_handler(trie, derived_map))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
-    trie = wh.startup()
-    srv = make_server(trie, args.port)
+    trie, derived_map = wh.startup()
+    srv = make_server(trie, args.port, derived_map)
     print(f"Serving on http://127.0.0.1:{srv.server_address[1]}", flush=True)
     try:
         srv.serve_forever()

@@ -62,18 +62,110 @@ class TestFilterCommon(unittest.TestCase):
 
 
 class TestRank(unittest.TestCase):
-    def _rank(self, table):
+    def _rank(self, table, dm=None, found=None):
         with mock.patch.object(wh, "zipf", side_effect=table.__getitem__):
-            return wh.rank(set(table))
+            c, l = wh.rank(found if found is not None else set(table), dm)
+        return c, l
 
     def test_tiers(self):
         c, l = self._rank({"aaa": 5.0, "bbb": 4.99, "ccc": 3.0, "ddd": 2.99})
-        self.assertEqual(c, ["aaa"])
-        self.assertEqual(l, ["bbb", "ccc"])
+        self.assertEqual([r["word"] for r in c], ["aaa"])
+        self.assertEqual([r["word"] for r in l], ["bbb", "ccc"])
 
     def test_sort(self):
         c, _ = self._rank({"abcd": 5.5, "zzz": 6.0, "aaa": 6.0, "bbb": 5.1, "wxyz": 5.9})
-        self.assertEqual(c, ["wxyz", "abcd", "aaa", "zzz", "bbb"])
+        self.assertEqual([r["word"] for r in c], ["wxyz", "abcd", "aaa", "zzz", "bbb"])
+
+    def test_same_length_zipf_decides(self):
+        c, _ = self._rank({"zzzz": 6.0, "aaaa": 5.5})
+        self.assertEqual([r["word"] for r in c], ["zzzz", "aaaa"])
+
+    def test_form_nested_points_dont_reorder(self):
+        t = {"plan": 5.5, "plans": 5.0, "zzzz": 5.8}
+        c, _ = self._rank(t, {"plans": "plan"})
+        self.assertEqual([r["word"] for r in c], ["zzzz", "plan"])
+        self.assertEqual(c[1]["forms"], ["plans"])
+        self.assertIsNone(c[1]["base"])
+
+    def test_standalone_form(self):
+        c, l = self._rank({"plans": 4.0, "plan": 5.5}, {"plans": "plan"}, found={"plans"})
+        self.assertEqual(l, [])
+        self.assertEqual(c[0]["word"], "plans")
+        self.assertEqual(c[0]["base"], "plan")
+
+    def test_tier_follows_base(self):
+        t = {"great": 4.9, "greatest": 6.0}
+        c, l = self._rank(t, {"greatest": "great"})
+        self.assertEqual(c, [])
+        self.assertEqual(l[0]["forms"], ["greatest"])
+        t = {"big": 5.5, "bigly": 3.5}
+        c, l = self._rank(t, {"bigly": "big"})
+        self.assertEqual(l, [])
+        self.assertEqual(c[0]["forms"], ["bigly"])
+
+    def test_forms_count_toward_30_lines(self):
+        rows = [{"word": f"w{i}", "base": None, "forms": [f"w{i}s", f"w{i}d"]}
+                for i in range(20)]
+        out, n = wh.truncate_rows(rows)
+        self.assertEqual(n, 30)
+        self.assertEqual(sum(1 + len(r["forms"]) for r in out), 30)
+        self.assertEqual(len(out), 10)
+        self.assertEqual(len(wh.tier_words(rows)), 60)
+
+    def test_group_cut_at_boundary(self):
+        rows = [{"word": "a", "base": None, "forms": ["as"] * 28},
+                {"word": "b", "base": None, "forms": ["bs", "bd", "bx"]},
+                {"word": "c", "base": None, "forms": []}]
+        out, n = wh.truncate_rows(rows)
+        self.assertEqual(n, 30)
+        self.assertEqual([r["word"] for r in out], ["a", "b"])
+        self.assertEqual(len(out[0]["forms"]), 28)
+        self.assertEqual(out[1]["forms"], [])
+        # one more slot keeps the first form of b
+        rows[0]["forms"] = ["as"] * 27
+        out, n = wh.truncate_rows(rows)
+        self.assertEqual(out[1]["forms"], ["bs"])
+        self.assertEqual(rows[1]["forms"], ["bs", "bd", "bx"])
+
+
+class TestInflections(unittest.TestCase):
+    def test_candidates(self):
+        self.assertTrue({"plans", "planned", "planning"} <= wh.inflections("plan"))
+        self.assertTrue({"rates", "rated", "rating", "rater", "raters"} <= wh.inflections("rate"))
+        self.assertIn("cities", wh.inflections("city"))
+        self.assertIn("boxes", wh.inflections("box"))
+        self.assertTrue({"stopped", "stopping"} <= wh.inflections("stop"))
+        self.assertTrue({"greater", "greatest", "greatly"} <= wh.inflections("great"))
+        self.assertIn("seeing", wh.inflections("see"))
+        self.assertIn("lying", wh.inflections("lie"))
+        self.assertIn("basically", wh.inflections("basic"))
+        self.assertIn("simply", wh.inflections("simple"))
+
+    def test_generate_filter(self):
+        freq = {"plans": 1e-3, "planned": 1e-4, "eated": 0, "eat": 1e-3, "eats": 1e-8,
+                "eaten": 9.9e-9, "eating": 9.9e-9}
+        d = wh.generate_derived({"plan", "eat"}, freq)
+        self.assertEqual(d, {"plans": "plan", "planned": "plan", "eats": "eat"})
+
+    def test_threshold_exact(self):
+        d = wh.generate_derived({"abc"}, {"abcs": 1e-8, "abced": 9.9e-9})
+        self.assertEqual(d, {"abcs": "abc"})
+
+    def test_highest_base_wins(self):
+        # "boxer" from box+er and "boxe"+"r"; pick the more frequent base
+        d = wh.generate_derived({"box", "boxe"}, {"box": 1e-3, "boxe": 1e-6, "boxer": 1e-5})
+        self.assertEqual(d["boxer"], "box")
+
+    def test_chain_and_self(self):
+        self.assertEqual(wh.resolve_chains({"a": "b", "b": "c"}), {"a": "c", "b": "c"})
+        self.assertNotIn("x", wh.resolve_chains({"x": "x"}))
+        self.assertEqual(wh.resolve_chains({"a": "b", "b": "a"}), {})
+
+    def test_base_that_is_also_derived_maps_to_root(self):
+        freq = {"great": 1e-4, "greater": 1e-5, "greatest": 1e-5, "greaterx": 1e-5}
+        d = wh.generate_derived({"great", "greater"}, freq)
+        self.assertEqual(d["greater"], "great")
+        self.assertEqual(d["greatest"], "great")
 
 
 class TestParse(unittest.TestCase):
@@ -88,9 +180,22 @@ class TestParse(unittest.TestCase):
 
 class TestIntegration(unittest.TestCase):
     def test_real_dictionary(self):
-        found = wh.solve("SERSPATGLINESERS", wh.build_trie(wh.load_dictionary()))
+        board = "SERSPATGLINESERS"
+        trie, dm = wh.startup()
+        paths = wh.solve_paths(board, trie)
         for w in ["pat", "tap", "sap", "line", "sat"]:
-            self.assertIn(w, found)
+            self.assertIn(w, paths)
+        common, less = wh.rank(paths, dm)
+        by = {r["word"]: r for r in common + less}
+        for base, form in [("plan", "plans"), ("part", "parts"), ("line", "lines"),
+                           ("seat", "seats"), ("site", "sites")]:
+            self.assertIn(form, by[base]["forms"], form)
+        nb = wh.neighbors()
+        for w, p in paths.items():
+            self.assertEqual("".join(board[i] for i in p).lower(), w)
+            self.assertEqual(len(set(p)), len(p))
+            for x, y in zip(p, p[1:]):
+                self.assertIn(y, nb[x])
 
 
 if __name__ == "__main__":

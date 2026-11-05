@@ -9,14 +9,15 @@ import wordhunt as wh
 
 BOARD = "SERSPATGLINESERS"
 trie = None
+dmap = None
 srv = None
 base = None
 
 
 def setUpModule():
-    global trie, srv, base
-    trie = wh.startup()
-    srv = server.make_server(trie, 0)
+    global trie, dmap, srv, base
+    trie, dmap = wh.startup()
+    srv = server.make_server(trie, 0, dmap)
     base = f"http://127.0.0.1:{srv.server_address[1]}"
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
@@ -37,7 +38,8 @@ def req(path, data=None, method=None):
 
 def check_paths(tc, board, rows):
     nb = wh.neighbors()
-    for row in rows:
+    flat = [x for row in rows for x in [row] + row.get("forms", [])]
+    for row in flat:
         w, p = row["word"], row["path"]
         tc.assertEqual(len(p), len(w))
         tc.assertEqual(len(set(p)), len(p))
@@ -48,19 +50,24 @@ def check_paths(tc, board, rows):
 
 class TestBuildResult(unittest.TestCase):
     def test_result(self):
-        r = server.build_result(BOARD, trie)
-        self.assertEqual(r["total_words"], 347)
-        self.assertEqual(r["total_points"], 219300)
+        r = server.build_result(BOARD, trie, dmap)
+        self.assertGreater(r["total_words"], 347)
         for k in ("common", "less_common"):
-            self.assertLessEqual(len(r[k]), 30)
+            self.assertLessEqual(sum(1 + len(x["forms"]) for x in r[k]), 30)
             check_paths(self, BOARD, r[k])
+            for row in r[k]:
+                self.assertIn("base", row)
+                self.assertIsInstance(row["forms"], list)
+        self.assertTrue(any(x["forms"] for x in r["common"] + r["less_common"]))
+        self.assertGreater(r["common_total"], 30)
 
 
 class TestHTTP(unittest.TestCase):
     def test_valid(self):
         code, body = req("/api/solve", json.dumps({"board": "serspatglineserS"}).encode())
         self.assertEqual(code, 200)
-        self.assertEqual(json.loads(body)["total_words"], 347)
+        self.assertEqual(json.loads(body)["total_words"],
+                         server.build_result(BOARD, trie, dmap)["total_words"])
 
     def test_invalid_board(self):
         self.assertEqual(req("/api/solve", b'{"board": "ABC"}')[0], 400)
