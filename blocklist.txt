@@ -1,0 +1,3 @@
+# Words the game rejects; the solver skips them.
+# One word per line, case-insensitive. Blank lines and lines starting with # are ignored.
+# Exact words only: blocking a base word does not block its inflected forms.

@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -178,6 +180,52 @@ class TestParse(unittest.TestCase):
 
     def test_accept(self):
         self.assertEqual(wh.parse_board("  abcd efgh ijkl mnop\n"), "ABCDEFGHIJKLMNOP")
+
+
+class TestProperNouns(unittest.TestCase):
+    def test_dictionary(self):
+        d = wh.load_dictionary()
+        for w in ["yemen", "eden", "paris", "santa"]:
+            self.assertNotIn(w, d, w)
+        for w in ["turkey", "march", "china", "retina"]:
+            self.assertIn(w, d, w)
+
+
+class TestBlocklist(unittest.TestCase):
+    def _tmp(self, text):
+        f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+        f.write(text)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def test_parse(self):
+        p = self._tmp("# header\n\n  Foo  \nBAR\n   # indented comment\n\t\nbaz\n")
+        self.assertEqual(wh.load_blocklist(p), {"foo", "bar", "baz"})
+
+    def test_missing(self):
+        self.assertEqual(wh.load_blocklist("/nonexistent/blocklist.txt"), set())
+
+    def test_startup_applies(self):
+        board = "SERSPATGLINESERS"
+        base_trie, base_dm = wh.startup(self._tmp(""))
+        self.assertIn("plans", base_dm)
+        found0 = wh.solve(board, base_trie)
+        self.assertIn("plan", found0)
+        self.assertIn("plans", found0)
+        trie, dm = wh.startup(self._tmp("PLAN\nplans\n"))
+        found = wh.solve(board, trie)
+        for w in ["plan", "plans"]:
+            self.assertNotIn(w, found)
+            self.assertNotIn(w, dm)
+        self.assertIn("line", found)
+
+    def test_block_base_keeps_forms(self):
+        board = "SERSPATGLINESERS"
+        trie, dm = wh.startup(self._tmp("plan\n"))
+        found = wh.solve(board, trie)
+        self.assertNotIn("plan", found)
+        self.assertIn("plans", found)
 
 
 class TestIntegration(unittest.TestCase):

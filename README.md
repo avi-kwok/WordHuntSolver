@@ -51,3 +51,4 @@ Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 1
 - **v5**: Simple UI
 - **v6**: Grouped suffix/prefix words
 - **v7**: Improved cutoff for better results
+- **v8**: Excluded proper nouns + created blocklist

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Word Hunt (4x4 Boggle-style) solver: trie + DFS."""
+import os
 import re
 import sys
 import time
@@ -16,10 +17,24 @@ TOP_N = 30
 _SCORES = {3: 100, 4: 400, 5: 800, 6: 1400, 7: 1800, 8: 2200}
 
 
+BLOCKLIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocklist.txt")
+
+
 def load_dictionary():
-    """Lowercase alpha words from english-words 'web2'."""
+    """Alpha words from english-words 'web2' that appear in lowercase (no proper nouns)."""
     from english_words import get_english_words_set
-    return set(get_english_words_set(["web2"], lower=True, alpha=True))
+    return {w for w in get_english_words_set(["web2"], lower=False, alpha=True)
+            if w.islower()}
+
+
+def load_blocklist(path=BLOCKLIST_PATH):
+    """Lowercase words from `path` (one per line; blank and # lines ignored); empty set if missing."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f]
+    except FileNotFoundError:
+        return set()
+    return {ln.lower() for ln in lines if ln and not ln.startswith("#")}
 
 
 def neighbors():
@@ -296,23 +311,33 @@ def run(board, trie, derived_map):
     print(format_output(board, common, less, ms))
 
 
-def startup():
+def startup(blocklist_path=BLOCKLIST_PATH):
     """Load dictionary, build trie once, warm up wordfreq.
 
-    Returns (trie, derived_map).
+    Words in the blocklist are removed (exact words only) from bases and
+    derived forms. Returns (trie, derived_map).
     """
     t = time.perf_counter()
+    from english_words import get_english_words_set
     from wordfreq import get_frequency_dict
     zipf("the")
     freq = get_frequency_dict("en")
     all_words = load_dictionary()
-    sized = {w for w in all_words if 3 <= len(w) <= CELLS}
+    lowered = set(get_english_words_set(["web2"], lower=True, alpha=True))
+    size_ok = lambda w: 3 <= len(w) <= CELLS
+    proper = len(filter_common({w for w in lowered - all_words if size_ok(w)}, freq))
+    sized = {w for w in all_words if size_ok(w)}
     bases = filter_common(sized, freq)
     derived_map = generate_derived(bases, freq)
-    trie = build_trie(bases | set(derived_map))
+    blocked = load_blocklist(blocklist_path)
+    n_blocked = len((bases | set(derived_map)) & blocked)
+    bases -= blocked
+    derived_map = {w: b for w, b in derived_map.items() if w not in blocked}
+    trie = build_trie((bases | set(derived_map)) - blocked)
     ms = (time.perf_counter() - t) * 1000
     print(f"Loaded {len(bases)} base + {len(derived_map)} derived words "
-          f"(zipf >= {MIN_ZIPF:g}; forms >= {DERIVED_MIN_ZIPF:g}) in {ms:.0f} ms")
+          f"(zipf >= {MIN_ZIPF:g}; forms >= {DERIVED_MIN_ZIPF:g}; "
+          f"{proper} proper nouns removed; {n_blocked} blocked) in {ms:.0f} ms")
     return trie, derived_map
 
 
