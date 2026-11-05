@@ -76,3 +76,4 @@ Vercel picks up the top-level `app` (WSGI callable) in `server.py` and installs 
 - **v12**: UI restyle to larp word hunt.
 - **v13**: QoL word grouping added, ready for deployment
 - **v14**: Added BFS solver
+- **v15**: Word path and column/board UI updates
