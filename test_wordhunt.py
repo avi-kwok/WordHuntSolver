@@ -668,6 +668,70 @@ class TestGroupOnly(unittest.TestCase):
         self.assertEqual(len(c), wh.GROUP_MAX)
 
 
+class TestBFS(unittest.TestCase):
+    BOARDS = ["SERSPATGLINESERS", "NNDVSCOTRIHEREIT", "ITNBOENRRDASEVLD"]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.trie, cls.dm = wh.startup()
+
+    def test_same_words_as_dfs(self):
+        for b in self.BOARDS:
+            found, st = wh.solve_bfs(b, self.trie)
+            words = [w for w, _, _ in found]
+            self.assertEqual(len(words), len(set(words)))
+            self.assertEqual(set(words), set(wh.solve_paths(b, self.trie)), b)
+            self.assertGreater(st["states"], 0)
+            self.assertGreaterEqual(st["peak_frontier"], 1)
+            self.assertGreaterEqual(st["levels"], 3)
+
+    def test_paths_valid_and_order(self):
+        nb = wh.neighbors()
+        for b in self.BOARDS:
+            found, _ = wh.solve_bfs(b, self.trie)
+            for w, p, _ in found:
+                self.assertEqual(len(set(p)), len(p))
+                self.assertEqual("".join(b[i] for i in p).lower(), w)
+                for x, y in zip(p, p[1:]):
+                    self.assertIn(y, nb[x])
+            self.assertEqual([o for _, _, o in found], list(range(len(found))))
+            lens = [len(w) for w, _, _ in found]
+            self.assertEqual(lens, sorted(lens))
+
+    def test_bfs_order(self):
+        z = {"abcd": 1.0, "abc": 8.0, "xyz": 3.0, "pqr": 5.0, "aaa": 4.0, "bbb": 4.0}
+        with mock.patch.object(wh, "zipf", lambda w: z[w]):
+            self.assertEqual([t[0] for t in wh.bfs_order([("abc", [], 0), ("abcd", [], 1)])],
+                             ["abcd", "abc"])
+            self.assertEqual([t[0] for t in wh.bfs_order([("xyz", [], 0), ("pqr", [], 1)])],
+                             ["pqr", "xyz"])
+            self.assertEqual([t[0] for t in wh.bfs_order([("bbb", [], 5), ("aaa", [], 2)])],
+                             ["aaa", "bbb"])
+
+    def test_list_filters(self):
+        board = "SERSPATGLINESERS"
+        found, _ = wh.solve_bfs(board, self.trie)
+        got = {t[0] for t in wh.bfs_list(found, self.dm)}
+        pool = set(self.dm.group_only) - set(self.dm.allowed)
+        self.assertTrue({t[0] for t in found} & pool)
+        self.assertFalse(got & pool)
+        shown = set(wh.tier_words_all(wh.rank({t[0] for t in found}, self.dm)))
+        self.assertEqual(got, shown - pool)
+        keys = [wh.bfs_key(t[0]) for t in wh.bfs_list(found, self.dm)]
+        self.assertEqual(keys, sorted(keys, reverse=True))
+
+    def test_block_and_allow(self):
+        with tempfile.TemporaryDirectory() as d:
+            bl, al = os.path.join(d, "b.txt"), os.path.join(d, "a.txt")
+            open(bl, "w").write("sat\n")
+            open(al, "w").write("zat\n")
+            trie, dm = wh.startup(bl, al)
+        self.assertNotIn("sat", {t[0] for t in wh.solve_bfs("SATZXXXXXXXXXXXX", trie)[0]})
+        found, _ = wh.solve_bfs("ZATSXXXXXXXXXXXX", trie)
+        self.assertIn("zat", {t[0] for t in wh.bfs_list(found, dm)})
+        self.assertNotIn("sat", {t[0] for t in wh.bfs_list(found, dm)})
+
+
 class TestIntegration(unittest.TestCase):
     def test_real_dictionary(self):
         board = "SERSPATGLINESERS"

@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import time
+from collections import deque
 from functools import lru_cache
 
 SIZE = 4
@@ -111,6 +112,72 @@ def solve_paths(board, trie):
     for i in range(CELLS):
         dfs(i, trie, 0)
     return found
+
+
+def solve_bfs(board, trie):
+    """Breadth-first search over (cell, trie node, visited mask, path) states.
+
+    Level 1 = every cell whose letter is in the trie; each level extends every state
+    to unvisited neighbours whose letter is a trie child. A word is recorded the
+    FIRST time a terminal node is reached. Returns (found, stats): found = ordered
+    list of (word, path, order), order = discovery index from 0 (non-decreasing in
+    length); stats = {"states": states expanded, "peak_frontier": max deque length,
+    "levels": deepest level reached}.
+    """
+    board = board.lower()
+    nbrs = neighbors()
+    found, seen = [], set()
+    queue = deque()
+    for i in range(CELLS):
+        node = trie.get(board[i])
+        if node is not None:
+            queue.append((i, node, 1 << i, (i,)))
+    states, peak, levels = 0, len(queue), 1 if queue else 0
+    while queue:
+        i, node, mask, path = queue.popleft()
+        states += 1
+        levels = max(levels, len(path))
+        word = node.get(END)
+        if word is not None and word not in seen:
+            seen.add(word)
+            found.append((word, list(path), len(found)))
+        for j in nbrs[i]:
+            if not mask & (1 << j):
+                child = node.get(board[j])
+                if child is not None:
+                    queue.append((j, child, mask | (1 << j), path + (j,)))
+        peak = max(peak, len(queue))
+    return found, {"states": states, "peak_frontier": peak, "levels": levels}
+
+
+def bfs_key(word):
+    """L + Z / 10 for one word (see bfs_order)."""
+    return len(word) + zipf(word) / 10
+
+
+def bfs_order(found):
+    """Sort BFS `found` entries (word, path, order) for the BFS list.
+
+    key = L + Z / 10, with L = word length and Z = zipf (0-8). Z / 10 < 1, so one
+    extra letter always outweighs any zipf gap: length decides first, commonness
+    breaks ties within a length. Sort by key descending; exact ties go by BFS
+    discovery `order` ascending.
+    """
+    return sorted(found, key=lambda t: (-bfs_key(t[0]), t[2]))
+
+
+def bfs_eligible(words, derived_map=None):
+    """Words rank() displays in any column (top-level rows plus forms), minus
+    group-only pool words (they only ever appear inside groups)."""
+    dm = derived_map if derived_map is not None else {}
+    shown = set(tier_words_all(rank(set(words), dm)))
+    return shown - (set(getattr(dm, "group_only", ())) - set(getattr(dm, "allowed", ())))
+
+
+def bfs_list(found, derived_map=None):
+    """Eligible entries of `found`, in bfs_order."""
+    ok = bfs_eligible([t[0] for t in found], derived_map)
+    return bfs_order([t for t in found if t[0] in ok])
 
 
 def solve(board, trie):
@@ -436,6 +503,11 @@ def tier_words(rows):
     return [w for r in rows for w in [r["word"]] + r["forms"]]
 
 
+def tier_words_all(tiers):
+    """Every word in several tiers, forms included."""
+    return [w for t in tiers for w in tier_words(t)]
+
+
 def parse_board(text):
     """Validate and normalise input; return 16 uppercase letters or raise ValueError."""
     s = "".join(text.split())
@@ -496,6 +568,24 @@ def run(board, trie, derived_map):
     print(format_output(board, common, less, rare, ms))
 
 
+def run_bfs(board, trie, derived_map):
+    t = time.perf_counter()
+    solve_paths(board, trie)
+    dfs_ms = (time.perf_counter() - t) * 1000
+    t = time.perf_counter()
+    found, st = solve_bfs(board, trie)
+    ms = (time.perf_counter() - t) * 1000
+    rows = bfs_list(found, derived_map)
+    for r in range(SIZE):
+        print(" ".join(board[r * SIZE:(r + 1) * SIZE]))
+    print()
+    print(f"BFS: {st['states']} states, peak frontier {st['peak_frontier']}, "
+          f"{st['levels']} levels, {ms:.1f} ms (DFS {dfs_ms:.1f} ms)")
+    for i, (w, _, order) in enumerate(rows[:40]):
+        print(f"{i + 1:3d}. {w.upper():<16} {score(w):>5} {zipf(w):>4.1f} "
+              f"#{order:<5d} {bfs_key(w):>6.2f}")
+
+
 def startup(blocklist_path=BLOCKLIST_PATH, allowlist_path=ALLOWLIST_PATH):
     """Load dictionary, build trie once, warm up wordfreq.
 
@@ -539,6 +629,17 @@ def startup(blocklist_path=BLOCKLIST_PATH, allowlist_path=ALLOWLIST_PATH):
 
 
 def main(argv):
+    if len(argv) > 1 and argv[1] == "--bfs":
+        if len(argv) < 3:
+            print("Error: --bfs needs a board.", file=sys.stderr)
+            return 1
+        try:
+            board = parse_board(argv[2])
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        run_bfs(board, *startup())
+        return 0
     if len(argv) > 1:
         try:
             board = parse_board(argv[1])

@@ -13,6 +13,7 @@ python3 -m venv .venv
 ```
 .venv/bin/python wordhunt.py SERSPATGLINESERS   # one board, then exit
 .venv/bin/python wordhunt.py                    # interactive; empty line or q quits
+.venv/bin/python wordhunt.py --bfs SERSPATGLINESERS   # BFS list: stats line + top 40
 .venv/bin/python test_wordhunt.py               # tests
 ```
 Board = 16 letters, row-major (left to right, top to bottom), case-insensitive.
@@ -55,6 +56,9 @@ Local only (binds 127.0.0.1), stdlib only, no extra dependencies.
 Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 16 letters), press Solve, then click a result row to see its path drawn on the full-size board. API: `POST /api/solve` with `{"board": "<16 letters>"}` returns `common`, `less_common` and `rare` (top 30 lines each, rows carry `group_key` (the seed word), `shared` (chunk shared with the seed; null for the seed and singles), `group_size`, `group_rate`, `group_points`, `group_time`, `best_points`) with paths, plus `*_total` counts and overall totals. Tests: `.venv/bin/python test_server.py`.
 
 
+## BFS list
+`solve_bfs(board, trie)` is a breadth-first alternative to the DFS: a `deque` of (cell, trie node, visited mask, path) states, level 1 = every cell in the trie, a word recorded the first time it is reached. It finds exactly the DFS word set and returns `(found, stats)` with `found` = `(word, path, order)` in discovery order (non-decreasing length) and `stats` = `states`, `peak_frontier`, `levels`. The BFS list sorts eligible words by `key = L + Z / 10` (L = length, Z = zipf; Z/10 < 1 so length decides first, zipf breaks ties), remaining ties by discovery `order`. Eligible = every word `rank()` displays (top-level rows plus forms, same filters) minus group-only pool words. The API adds `bfs` (`words` with `word`, `points`, `zipf`, `path`, `order`, `key`; plus `states`, `peak_frontier`, `levels`, `ms`, `dfs_ms`); the UI has a Grouped / BFS list toggle above the columns.
+
 ## Deploy (Vercel)
 Vercel picks up the top-level `app` (WSGI callable) in `server.py` and installs `requirements.txt`. The trie loads lazily on the first request per process, so the first request after a cold start takes about 1 s while the dictionary loads; warm invocations reuse it. Memory use is about 150-200 MB. Not yet deployed from this repo, so the Vercel build itself is unverified; `app` is covered by `test_server.py` (called directly with a WSGI environ).
 
@@ -71,3 +75,4 @@ Vercel picks up the top-level `app` (WSGI callable) in `server.py` and installs 
 - **v11**: Added points-per-second ranking for even better inputs!
 - **v12**: UI restyle to larp word hunt.
 - **v13**: QoL word grouping added, ready for deployment
+- **v14**: Added BFS solver
