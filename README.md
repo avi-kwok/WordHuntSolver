@@ -45,7 +45,7 @@ Local only (binds 127.0.0.1), stdlib only, no extra dependencies.
 ```
 .venv/bin/python server.py [--port 8000]
 ```
-Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 16 letters), press Solve, then click a result row to see its path on the mini board. API: `POST /api/solve` with `{"board": "<16 letters>"}` returns `common`, `less_common` and `rare` (top 30 lines each, rows carry `rhyme`, `group_size`, `group_rate`, `group_points`, `group_time`) with paths, plus `*_total` counts and overall totals. Tests: `.venv/bin/python test_server.py`.
+Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 16 letters), press Solve, then click a result row to see its path drawn on the full-size board. API: `POST /api/solve` with `{"board": "<16 letters>"}` returns `common`, `less_common` and `rare` (top 30 lines each, rows carry `rhyme`, `group_size`, `group_rate`, `group_points`, `group_time`) with paths, plus `*_total` counts and overall totals. Tests: `.venv/bin/python test_server.py`.
 
 ## Version history
 - **v1**: Trie + DFS solver, dictionary + frequency for reasonable results
@@ -58,3 +58,4 @@ Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 1
 - **v9**: Grouped spelling rhymes for faster inputs
 - **v10**: Bug fixes
 - **v11**: Added points-per-second ranking for even better inputs!
+- **v12**: UI restyle to larp word hunt.
