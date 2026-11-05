@@ -9,7 +9,8 @@ SIZE = 4
 CELLS = SIZE * SIZE
 END = "$"
 COMMON_MIN = 5.0
-LESS_MIN = 3.0
+MIN_ZIPF = 3.0
+LESS_MIN = MIN_ZIPF
 TOP_N = 30
 _SCORES = {3: 100, 4: 400, 5: 800, 6: 1400, 7: 1800, 8: 2200}
 
@@ -84,6 +85,15 @@ def zipf(word):
     return zipf_frequency(word, "en")
 
 
+def filter_common(words, freq_dict, min_zipf=MIN_ZIPF):
+    """Keep words with zipf >= min_zipf using a wordfreq frequency dict.
+
+    zipf = log10(freq * 1e9), so zipf >= z  <=>  freq >= 10 ** (z - 9).
+    """
+    cutoff = 10 ** (min_zipf - 9)
+    return {w for w in words if freq_dict.get(w, 0) >= cutoff}
+
+
 def rank(found):
     """Return (common, less_common); zipf picks tier (< 3 dropped).
 
@@ -150,11 +160,15 @@ def run(board, trie):
 def startup():
     """Load dictionary, build trie once, warm up wordfreq; return trie."""
     t = time.perf_counter()
-    words = load_dictionary()
-    trie = build_trie(words)
+    from wordfreq import get_frequency_dict
     zipf("the")
+    all_words = load_dictionary()
+    sized = {w for w in all_words if 3 <= len(w) <= CELLS}
+    words = filter_common(sized, get_frequency_dict("en"))
+    trie = build_trie(words)
     ms = (time.perf_counter() - t) * 1000
-    print(f"Loaded {len(words)} words in {ms:.0f} ms")
+    print(f"Loaded {len(words)} of {len(sized)} words "
+          f"(zipf >= {MIN_ZIPF:g}) in {ms:.0f} ms")
     return trie
 
 

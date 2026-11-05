@@ -20,7 +20,8 @@ Board = 16 letters, row-major (left to right, top to bottom), case-insensitive.
 ## Algorithm
 1. Load `web2` word list (english-words).
 2. Build one trie at startup from words of length 3-16 (nested dicts, terminal key `$` holds the word), reused for every board.
-3. DFS from each cell, walking the trie in lockstep; visited cells tracked as a 16-bit bitmask; prune as soon as the trie has no child for the next letter.
+3. Startup prefilter: keep only words with zipf >= 3 (via wordfreq's frequency dict) before building the trie.
+4. DFS from each cell, walking the trie in lockstep; visited cells tracked as a 16-bit bitmask; prune as soon as the trie has no child for the next letter.
 
 ## Scoring
 3=100, 4=400, 5=800, 6=1400, 7=1800, 8=2200, then +400 per letter beyond 8.
@@ -36,3 +37,4 @@ Each tier sorts by length desc, then zipf desc, then alphabetical. Top 30 per ti
 ## Version history
 - **v1**: Trie + DFS solver, dictionary + frequency for reasonable results
 - **v2+v3**: Sorted word results + built trie at startup -> ~1.9s to ~13ms per board
+- **v4**: Filter dictionary to include zipf >= 3 words only -> 17k words + ~5 ms per board

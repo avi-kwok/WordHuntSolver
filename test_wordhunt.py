@@ -39,6 +39,13 @@ class TestSolve(unittest.TestCase):
         self.assertEqual(wh.solve("abcdefghijklmnop", wh.build_trie({"abc", "aeb"})), {"abc", "aeb"})
 
 
+class TestFilterCommon(unittest.TestCase):
+    def test_cutoff(self):
+        freq = {"keep": 1e-6, "drop": 9.9e-7, "high": 1e-3}
+        out = wh.filter_common({"keep", "drop", "high", "missing"}, freq)
+        self.assertEqual(out, {"keep", "high"})
+
+
 class TestRank(unittest.TestCase):
     def _rank(self, table):
         with mock.patch.object(wh, "zipf", side_effect=table.__getitem__):
