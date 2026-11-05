@@ -1,3 +1,4 @@
+import io
 import json
 import threading
 import unittest
@@ -57,11 +58,20 @@ class TestBuildResult(unittest.TestCase):
             check_paths(self, BOARD, r[k])
             for row in r[k]:
                 self.assertIn("base", row)
-                self.assertIsInstance(row["rhyme"], str)
+                self.assertNotIn("rhyme", row)
+                self.assertIsInstance(row["group_key"], str)
+                self.assertIn("shared", row)
+                if row["group_key"] == row["word"] or row["group_size"] == 1:
+                    self.assertIsNone(row["shared"])
+                else:
+                    self.assertGreaterEqual(len(row["shared"]), 2)
                 self.assertGreaterEqual(row["group_size"], 1)
                 self.assertIsInstance(row["forms"], list)
                 self.assertIsInstance(row["group_rate"], float)
                 self.assertGreater(row["group_points"], 0)
+                self.assertGreaterEqual(row["group_points"], row["best_points"])
+                # a rarer member pulled up by a Common seed can outscore the seed
+                self.assertGreaterEqual(row["group_points"], row["points"])
                 self.assertGreater(row["group_time"], 0)
                 self.assertAlmostEqual(row["group_rate"], row["group_points"] / row["group_time"], delta=1)
         self.assertTrue(any(x["forms"] for x in r["common"] + r["less_common"]))
@@ -98,6 +108,56 @@ class TestHTTP(unittest.TestCase):
 
     def test_no_traversal(self):
         self.assertEqual(req("/../wordhunt.py")[0], 404)
+
+
+def call_app(method, path, body=b"", length=None):
+    environ = {"REQUEST_METHOD": method, "PATH_INFO": path,
+               "CONTENT_LENGTH": str(len(body) if length is None else length),
+               "wsgi.input": io.BytesIO(body)}
+    out = {}
+
+    def sr(status, headers):
+        out["status"], out["headers"] = status, dict(headers)
+
+    data = b"".join(server.app(environ, sr))
+    return int(out["status"].split()[0]), out["headers"], data
+
+
+class TestWSGI(unittest.TestCase):
+    def setUp(self):
+        server._STATE = (trie, dmap)  # reuse loaded trie
+
+    def test_index(self):
+        code, h, body = call_app("GET", "/")
+        self.assertEqual(code, 200)
+        self.assertEqual(h["Content-Type"], "text/html; charset=utf-8")
+        self.assertIn(b"<html", body.lower())
+
+    def test_valid(self):
+        code, _, body = call_app("POST", "/api/solve", json.dumps({"board": BOARD}).encode())
+        self.assertEqual(code, 200)
+        self.assertGreater(json.loads(body)["total_words"], 0)
+
+    def test_invalid_board(self):
+        self.assertEqual(call_app("POST", "/api/solve", b'{"board": "ABC"}')[0], 400)
+
+    def test_bad_json(self):
+        code, _, body = call_app("POST", "/api/solve", b"{nope")
+        self.assertEqual(code, 400)
+        self.assertIn("error", json.loads(body))
+
+    def test_oversized(self):
+        self.assertEqual(call_app("POST", "/api/solve", b"x" * 2000)[0], 413)
+
+    def test_traversal(self):
+        self.assertEqual(call_app("GET", "/../wordhunt.py")[0], 404)
+
+    def test_unknown(self):
+        self.assertEqual(call_app("GET", "/nope")[0], 404)
+        self.assertEqual(call_app("POST", "/nope", b"{}")[0], 404)
+
+    def test_other_method(self):
+        self.assertIn(call_app("PUT", "/api/solve", b"{}")[0], (404, 405))
 
 
 if __name__ == "__main__":

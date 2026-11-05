@@ -3,7 +3,9 @@
 import argparse
 import json
 import os
+import threading
 import time
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import wordhunt as wh
@@ -26,8 +28,10 @@ def build_result(board, trie, derived_map=None):
         for r in wh.truncate_rows(tier)[0]:
             d = item(r["word"])
             d["base"] = r["base"]
-            d["rhyme"] = r["rhyme"]
+            d["group_key"] = r["group_key"]
+            d["shared"] = r["shared"]
             d["group_size"] = r["group_size"]
+            d["best_points"] = r["best_points"]
             d["group_rate"] = round(r["group_rate"], 1)
             d["group_points"] = r["group_points"]
             d["group_time"] = round(r["group_time"], 2)
@@ -51,43 +55,96 @@ def build_result(board, trie, derived_map=None):
     return result
 
 
+_STATE = None
+_STATE_LOCK = threading.Lock()
+
+
+def get_state():
+    """Load (trie, derived_map) once per process, on first use."""
+    global _STATE
+    if _STATE is None:
+        with _STATE_LOCK:
+            if _STATE is None:
+                _STATE = wh.startup()
+    return _STATE
+
+
+def _resp(code, body, ctype="application/json"):
+    if not isinstance(body, bytes):
+        body = json.dumps(body).encode()
+    return code, [("Content-Type", ctype), ("Content-Length", str(len(body))),
+                  ("Cache-Control", "no-store")], body
+
+
+def handle(method, path, length, read_body, state):
+    """Shared routing. read_body(n) -> bytes; state() -> (trie, derived_map).
+    Returns (status, headers, body bytes)."""
+    if method == "GET":
+        if path == "/":
+            with open(INDEX, "rb") as f:
+                return _resp(200, f.read(), "text/html; charset=utf-8")
+        return _resp(404, {"error": "not found"})
+    if method == "POST":
+        if path != "/api/solve":
+            return _resp(404, {"error": "not found"})
+        if length is None:
+            return _resp(400, {"error": "bad Content-Length"})
+        if length > MAX_BODY:
+            return _resp(413, {"error": "body too large"})
+        try:
+            data = json.loads(read_body(length) or b"")
+            if not isinstance(data, dict):
+                raise ValueError("body must be a JSON object")
+            board = wh.parse_board(str(data.get("board", "")))
+        except (ValueError, UnicodeDecodeError) as e:
+            return _resp(400, {"error": str(e)})
+        trie, derived_map = state()
+        return _resp(200, build_result(board, trie, derived_map))
+    return _resp(405, {"error": "method not allowed"})
+
+
+def _length(value):
+    try:
+        n = int(value or 0)
+    except ValueError:
+        return None
+    return None if n < 0 else n
+
+
+def app(environ, start_response):
+    """WSGI entry point (Vercel, gunicorn, wsgiref)."""
+    length = _length(environ.get("CONTENT_LENGTH"))
+    code, headers, body = handle(
+        environ.get("REQUEST_METHOD", "GET"), environ.get("PATH_INFO", "/"),
+        length, lambda n: environ["wsgi.input"].read(n), get_state)
+    start_response(f"{code} {HTTPStatus(code).phrase}", headers)
+    return [body]
+
+
+application = app
+
+
 def make_handler(trie, derived_map=None):
+    state = lambda: (trie, derived_map)
+
     class Handler(BaseHTTPRequestHandler):
-        def _send(self, code, body, ctype="application/json"):
-            if not isinstance(body, bytes):
-                body = json.dumps(body).encode()
+        def _run(self, method):
+            length = _length(self.headers.get("Content-Length"))
+            if method == "POST" and length is not None and length > MAX_BODY:
+                self.close_connection = True
+            code, headers, body = handle(method, self.path, length,
+                                         self.rfile.read, state)
             self.send_response(code)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            for k, v in headers:
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path == "/":
-                with open(INDEX, "rb") as f:
-                    self._send(200, f.read(), "text/html; charset=utf-8")
-            else:
-                self._send(404, {"error": "not found"})
+            self._run("GET")
 
         def do_POST(self):
-            if self.path != "/api/solve":
-                return self._send(404, {"error": "not found"})
-            try:
-                length = int(self.headers.get("Content-Length", 0))
-            except ValueError:
-                return self._send(400, {"error": "bad Content-Length"})
-            if length > MAX_BODY:
-                self.close_connection = True
-                return self._send(413, {"error": "body too large"})
-            try:
-                data = json.loads(self.rfile.read(length) or b"")
-                if not isinstance(data, dict):
-                    raise ValueError("body must be a JSON object")
-                board = wh.parse_board(str(data.get("board", "")))
-            except (ValueError, UnicodeDecodeError) as e:
-                return self._send(400, {"error": str(e)})
-            self._send(200, build_result(board, trie, derived_map))
+            self._run("POST")
 
         def log_message(self, *args):
             pass
@@ -103,7 +160,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
-    trie, derived_map = wh.startup()
+    trie, derived_map = get_state()
     srv = make_server(trie, args.port, derived_map)
     print(f"Serving on http://127.0.0.1:{srv.server_address[1]}", flush=True)
     try:

@@ -15,17 +15,28 @@ LESS_MIN = MIN_ZIPF
 RARE_MIN_ZIPF = 2.5
 RARE_MIN_LEN = 4
 DERIVED_MIN_ZIPF = 2.0
+GROUP_POOL_MIN_ZIPF = 2.0  # floor for group-only near-miss words (below RARE_MIN_ZIPF)
 TOP_N = 30
-# Entry-time model for ranking rhyme groups by points per second: the first
+MIN_SHARED = 3  # shortest aligned run that makes two words match
+GROUP_MAX = 6  # most top-level rows in one group (seed + picks)
+# Entry-time model for ranking groups by points per second: the first
 # word of a group costs FIND_FIRST_S (spot + plan it), each later word in the
 # same group FIND_NEXT_S (pattern already known), plus a swipe cost per letter.
-FIND_FIRST_S = 1.0   # spot + plan the first word of a rhyme group
+FIND_FIRST_S = 1.0   # spot + plan the first word of a group
 FIND_NEXT_S = 0.4    # each later word in the same group (pattern already known)
 SWIPE_PER_LETTER_S = 0.15
 _SCORES = {3: 100, 4: 400, 5: 800, 6: 1400, 7: 1800, 8: 2200}
 
 
 BLOCKLIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocklist.txt")
+ALLOWLIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "allowlist.txt")
+
+
+class DerivedMap(dict):
+    """derived_map that also carries `allowed` (allowlisted words rank() must never
+    drop) and `group_only` (near-miss words that may only join a seed's group)."""
+    allowed = frozenset()
+    group_only = frozenset()
 
 
 def load_dictionary():
@@ -43,6 +54,11 @@ def load_blocklist(path=BLOCKLIST_PATH):
     except FileNotFoundError:
         return set()
     return {ln.lower() for ln in lines if ln and not ln.startswith("#")}
+
+
+def load_allowlist(path=ALLOWLIST_PATH):
+    """Same format as load_blocklist: words the solver must accept; empty set if missing."""
+    return load_blocklist(path)
 
 
 def neighbors():
@@ -221,25 +237,51 @@ def generate_derived(bases, freq_dict, min_zipf=DERIVED_MIN_ZIPF, exclude=frozen
     return resolve_chains({w: b for w, (_, b) in best.items()})
 
 
-def rhyme_key(word):
-    """`word` minus its leading consonant onset (its spelled rhyme ending).
+def _chunk(a, b):
+    """Longest same-index common run of a and b as (length, start); (0, 0) if none."""
+    best, run = (0, 0), 0
+    for i in range(min(len(a), len(b))):
+        run = run + 1 if a[i] == b[i] else 0
+        if run > best[0]:
+            best = (run, i - run + 1)
+    return best
 
-    y is a consonant only at index 0; u right after a leading q joins the
-    onset. A vowel-initial word is its own key; an all-consonant word too.
-    """
-    n = len(word)
-    i = 0
-    while i < n and word[i] not in _VOWELS and not (word[i] == "y" and i > 0):
-        i += 1
-    if i == n:
-        return word
-    if i and word[i - 1] == "q" and word[i] == "u":
-        i += 1
-    return word[i:]
+
+def shared_chunk(a, b):
+    """Longest run (>= MIN_SHARED) of letters at the same position counted from the
+    start of both words or from the end of both; '' if none. Ties: start
+    alignment first, then earliest position."""
+    n, i = _chunk(a, b)
+    m, j = _chunk(a[::-1], b[::-1])
+    if n >= MIN_SHARED and n >= m:
+        return a[i:i + n]
+    if m >= MIN_SHARED:
+        return a[::-1][j:j + m][::-1]
+    return ""
+
+
+def _one_off(a, b):
+    """True if a and b have the same length and differ in exactly one position."""
+    return len(a) == len(b) and sum(x != y for x, y in zip(a, b)) == 1
+
+
+def match_len(a, b):
+    """Match strength: the longer of len(shared_chunk(a, b)) and, for two
+    same-length words differing in exactly one position, len(a) - 1; else 0."""
+    return max(len(shared_chunk(a, b)), len(a) - 1 if _one_off(a, b) else 0)
+
+
+def _shared_label(seed, word):
+    """What a member shares with its seed: the chunk, else (one-letter
+    difference with no 3-letter run) the seed with the differing letter as '_'."""
+    c = shared_chunk(seed, word)
+    if c or not _one_off(seed, word):
+        return c
+    return "".join(x if x == y else "_" for x, y in zip(seed, word))
 
 
 def group_stats(words):
-    """(points, seconds) for a rhyme group; `words` = ordered group words,
+    """(points, seconds) for a group; `words` = ordered group words,
     first = best top-level word, then every other word incl. all nested forms."""
     points = sum(score(w) for w in words)
     t = sum(SWIPE_PER_LETTER_S * len(w) for w in words)
@@ -247,46 +289,89 @@ def group_stats(words):
     return points, t
 
 
-def group_rows(rows):
-    """Order top-level rows of one tier into contiguous rhyme groups.
+def group_tiers(common, less, rare, pool=()):
+    """Group top-level rows of all three tiers in ONE pass; return three lists.
 
-    Sets row["rhyme"], row["group_size"], row["group_points"],
-    row["group_time"], row["group_rate"] (points per second over the full
-    group, nested forms included). Groups: rate desc, best row points desc,
-    size desc, key. Rows in a group: (-len, -zipf, word).
+    Seed = best unassigned row by (tier, -len, -zipf, word) (tier 0 common,
+    1 less common, 2 rare; `pool` = group-only rows, tier 3, below rare). Its group is the seed plus up to GROUP_MAX-1
+    unassigned rows of the SAME or a RARER tier with match_len(seed, row) >=
+    MIN_SHARED (match against the seed only; see match_len for the
+    one-letter-difference rule), except a row whose entire word is an aligned
+    prefix or suffix of the seed (shared_chunk(seed, row) == row, e.g. "sis"
+    for "basis"); it stays unassigned. A seed pulls rarer words up, never a
+    more common word down. Picked by match_len desc, points desc, zipf desc,
+    word. Pool rows are never seeds and never singles: one no seed picks is
+    dropped (not in the output). The whole group goes in the SEED's column. Repeat until no rows
+    are left; a seed with no match is a single. Nested forms are never
+    matched or capped but count in stats.
+
+    Sets row["group_key"] (seed word), row["shared"] (see _shared_label;
+    None for the seed and singles), row["group_size"], row["group_points"],
+    row["group_time"], row["group_rate"] and row["best_points"] (seed score;
+    informational only). Each column orders its groups by one comparative
+    sum: group_points desc (all top-level words plus all nested forms), then
+    group_rate desc, size desc, seed word. Rows in a group: seed, then picks
+    by (-len, -zipf, word).
     """
     key = lambda r: (-len(r["word"]), -zipf(r["word"]), r["word"])
-    groups = {}
-    for r in rows:
-        groups.setdefault(rhyme_key(r["word"]), []).append(r)
-    ordered = []
-    for k, g in groups.items():
-        g.sort(key=key)
-        words = [g[0]["word"]] + list(g[0].get("forms", []))
-        for r in g[1:]:
+    tier_of = {id(r): t for t, rows in enumerate((common, less, rare, pool)) for r in rows}
+    left = sorted((r for rows in (common, less, rare, pool) for r in rows),
+                  key=lambda r: (tier_of[id(r)],) + key(r))
+    cols = ([], [], [], [])
+    while left:
+        seed = left.pop(0)
+        st = tier_of[id(seed)]
+        if st == 3:
+            continue
+        sw = seed["word"]
+        cands = [(match_len(sw, r["word"]), r) for r in left if tier_of[id(r)] >= st]
+        cands = [(m, r) for m, r in cands if m >= MIN_SHARED
+                 and shared_chunk(sw, r["word"]) != r["word"]]
+        cands.sort(key=lambda t: (-t[0], -score(t[1]["word"]), -zipf(t[1]["word"]), t[1]["word"]))
+        picks = sorted((r for _, r in cands[:GROUP_MAX - 1]), key=key)
+        ids = {id(r) for r in picks}
+        left = [r for r in left if id(r) not in ids]
+        g = [seed] + picks
+        words = []
+        for r in g:
             words += [r["word"]] + list(r.get("forms", []))
         pts, secs = group_stats(words)
         rate = pts / secs
+        best = score(sw)
         for r in g:
-            r["rhyme"], r["group_size"] = k, len(g)
+            r["group_key"], r["group_size"] = sw, len(g)
+            r["shared"] = None if r is seed else _shared_label(sw, r["word"])
             r["group_points"], r["group_time"], r["group_rate"] = pts, secs, rate
-        ordered.append((-rate, -score(g[0]["word"]), -len(g), k, g))
-    ordered.sort(key=lambda t: t[:4])
-    return [r for t in ordered for r in t[4]]
+            r["best_points"] = best
+        cols[st].append((-pts, -rate, -len(g), sw, g))
+    out = []
+    for col in cols[:3]:
+        col.sort(key=lambda t: t[:4])
+        out.append([r for t in col for r in t[4]])
+    return tuple(out)
+
+
+def group_rows(rows):
+    """Group rows treated as one tier (thin wrapper over group_tiers)."""
+    return group_tiers(rows, [], [])[0]
 
 
 def rank(found, derived_map=None):
     """Return (common, less_common, rare) lists of rows.
 
-    Row: {"word", "base", "forms", "rhyme", "group_size"}. Forms found with
+    Row: {"word", "base", "forms", "group_key", "group_size"}. Forms found with
     their base nest under it; a form found without its base is its own row
     with `base` set. Tier is decided by the base's zipf (< 2.5 dropped).
     Rare (2.5 <= zipf < 3) shows only words of 4+ letters; a 3-letter rare
-    base counts as not found, so its forms stand alone. Tiers are grouped
-    by rhyme_key over top-level rows (group order: see group_rows); forms
-    sort (-len, -zipf, word).
+    base counts as not found, so its forms stand alone. Top-level rows of all
+    tiers are grouped in one pass (see group_tiers: a group can pull rarer
+    words into the seed's column); forms
+    sort (-len, -zipf, word). An allowlisted word with no derived root is
+    never dropped: tier by its own zipf, Rare if below 3 (no length rule).
     """
-    dm = derived_map or {}
+    dm = derived_map if derived_map is not None else {}
+    allowed = getattr(dm, "allowed", frozenset())
+    pool_words = getattr(dm, "group_only", frozenset())
     found = set(found)
 
     def usable_base(b):
@@ -294,9 +379,12 @@ def rank(found, derived_map=None):
 
     rows = {}
     nested = {}
+    pool = []
     for w in found:
         root = dm.get(w)
-        if root is None:
+        if w in pool_words and w not in allowed and root is None:
+            pool.append({"word": w, "base": None, "forms": []})
+        elif root is None:
             rows[w] = {"word": w, "base": None, "forms": []}
         elif usable_base(root):
             nested.setdefault(root, []).append(w)
@@ -306,9 +394,13 @@ def rank(found, derived_map=None):
     common, less, rare = [], [], []
     for w, row in rows.items():
         z = zipf(row["base"] or w)
+        forms = nested.get(w, [])
+        if w in allowed and row["base"] is None and z < MIN_ZIPF:
+            row["forms"] = sorted((f for f in forms if len(f) >= RARE_MIN_LEN), key=key)
+            rare.append(row)
+            continue
         if z < RARE_MIN_ZIPF:
             continue
-        forms = nested.get(w, [])
         if z >= COMMON_MIN:
             tier = common
         elif z >= LESS_MIN:
@@ -320,7 +412,7 @@ def rank(found, derived_map=None):
             forms = [f for f in forms if len(f) >= RARE_MIN_LEN]
         row["forms"] = sorted(forms, key=key)
         tier.append(row)
-    return group_rows(common), group_rows(less), group_rows(rare)
+    return group_tiers(common, less, rare, pool)
 
 
 def truncate_rows(rows, limit=TOP_N):
@@ -404,11 +496,14 @@ def run(board, trie, derived_map):
     print(format_output(board, common, less, rare, ms))
 
 
-def startup(blocklist_path=BLOCKLIST_PATH):
+def startup(blocklist_path=BLOCKLIST_PATH, allowlist_path=ALLOWLIST_PATH):
     """Load dictionary, build trie once, warm up wordfreq.
 
     Words in the blocklist are removed (exact words only) from bases and
-    derived forms. Returns (trie, derived_map).
+    derived forms. Allowlisted words (alpha, 3-16 letters, not blocked) are
+    always added to the trie; one with no derived root is an ordinary
+    top-level row. Returns (trie, derived_map); derived_map.allowed holds
+    the allowlist.
     """
     t = time.perf_counter()
     from english_words import get_english_words_set
@@ -426,11 +521,20 @@ def startup(blocklist_path=BLOCKLIST_PATH):
     n_blocked = len((bases | set(derived_map)) & blocked)
     bases -= blocked
     derived_map = {w: b for w, b in derived_map.items() if w not in blocked}
-    trie = build_trie((bases | set(derived_map)) - blocked)
+    allowed = {w for w in load_allowlist(allowlist_path)
+               if w.isalpha() and w.isascii() and size_ok(w)} - blocked
+    derived_map = DerivedMap(resolve_chains(derived_map))
+    derived_map.allowed = frozenset(allowed)
+    pool_cands = {w for w in all_words if RARE_MIN_LEN <= len(w) <= CELLS}
+    group_only = (filter_common(pool_cands, freq, GROUP_POOL_MIN_ZIPF)
+                  - filter_common(pool_cands, freq, RARE_MIN_ZIPF)
+                  - bases - set(derived_map) - allowed - blocked)
+    derived_map.group_only = frozenset(group_only)
+    trie = build_trie((bases | set(derived_map) | allowed | group_only) - blocked)
     ms = (time.perf_counter() - t) * 1000
     print(f"Loaded {len(bases)} base + {len(derived_map)} derived words in {ms:.0f} ms")
-    print(f"  zipf >= {MIN_ZIPF:g}; rare >= {RARE_MIN_ZIPF:g} ({RARE_MIN_LEN}+ letters); "
-          f"forms >= {DERIVED_MIN_ZIPF:g}; {proper} proper nouns removed; {n_blocked} blocked")
+    print(f"  zipf >= {MIN_ZIPF:g}; rare >= {RARE_MIN_ZIPF:g} ({RARE_MIN_LEN}+); "
+          f"forms >= {DERIVED_MIN_ZIPF:g}; {proper} proper nouns; {n_blocked} blocked; {len(allowed)} allowed; {len(group_only)} group-only")
     return trie, derived_map
 
 

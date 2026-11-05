@@ -1,3 +1,28 @@
 # Words the game rejects; the solver skips them.
 # One word per line, case-insensitive. Blank lines and lines starting with # are ignored.
 # Exact words only: blocking a base word does not block its inflected forms.
+mala
+ist
+# contractions written without the apostrophe
+dont
+wong
+arent
+didnt
+doesnt
+wasnt
+werent
+havent
+wouldnt
+shouldnt
+theyre
+youve
+theyll
+thats
+whats
+heres
+theres
+wheres
+whos
+tien
+tous
+neo

@@ -1,0 +1,7 @@
+# Words the game accepts that the dictionary lacks; the solver always includes them.
+# One word per line, case-insensitive. Blank lines and lines starting with # are ignored.
+# The blocklist wins if a word is in both.
+lande
+nite
+dote
+hote

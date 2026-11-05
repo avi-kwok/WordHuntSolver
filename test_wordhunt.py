@@ -131,21 +131,31 @@ class TestRank(unittest.TestCase):
         self.assertEqual(rows[1]["forms"], ["bs", "bd", "bx"])
 
 
-class TestRhymeKey(unittest.TestCase):
+class TestMatch(unittest.TestCase):
     def test_examples(self):
-        for words, key in [(["bong", "dong", "tong", "wrong"], "ong"),
-                           (["part", "start", "smart", "chart", "art", "quart"], "art"),
-                           (["stranger", "danger", "ranger"], "anger"),
-                           (["line", "spine", "shine"], "ine"),
-                           (["style"], "yle"), (["yarn"], "arn"),
-                           (["rhythm"], "ythm"), (["nth"], "nth"), (["eat"], "eat")]:
-            for w in words:
-                self.assertEqual(wh.rhyme_key(w), key, w)
+        for a, b, chunk in [("brat", "brag", "bra"),
+                            ("bong", "wrong", "ong"), ("strange", "strain", "stra"),
+                            ("sing", "ring", "ing"), ("lama", "ama", "ama"),
+                            ("mist", "ist", "ist")]:
+            self.assertEqual(wh.shared_chunk(a, b), chunk, (a, b))
+            self.assertEqual(wh.shared_chunk(b, a), chunk, (b, a))
+            self.assertEqual(wh.match_len(a, b), len(chunk), (a, b))
 
-    def test_qu_and_y(self):
-        self.assertEqual(wh.rhyme_key("squat"), "at")
-        self.assertEqual(wh.rhyme_key("yyy"), "yy")
-        self.assertEqual(wh.rhyme_key("pst"), "pst")
+    def test_non_match(self):
+        # 2-letter runs no longer match (MIN_SHARED = 3)
+        self.assertEqual(wh.MIN_SHARED, 3)
+        self.assertEqual(wh.shared_chunk("brag", "trap"), "")
+        self.assertEqual(wh.match_len("brag", "trap"), 0)
+        self.assertEqual(wh.match_len("cats", "bits"), 0)
+        # cat/dog: no letter agrees at any index, from either end
+        self.assertEqual(wh.shared_chunk("cat", "dog"), "")
+        self.assertEqual(wh.match_len("cat", "dog"), 0)
+        # single shared letter is not a chunk
+        self.assertEqual(wh.match_len("cab", "dog"), 0)
+        self.assertEqual(wh.match_len("bad", "bot"), 0)
+
+    def test_tie_prefers_start(self):
+        self.assertEqual(wh.shared_chunk("abcxdef", "abcqdef"), "abc")
 
 
 class TestRareAndGrouping(unittest.TestCase):
@@ -179,14 +189,53 @@ class TestRareAndGrouping(unittest.TestCase):
         _, _, r = self._rank({"abcd": 2.4, "abcds": 3.5}, {"abcds": "abcd"})
         self.assertEqual(r, [])
 
-    def test_biggest_group_first(self):
+    def test_group_before_single_and_seed(self):
         t = {"bong": 5.0, "dong": 5.0, "tong": 5.0, "party": 6.0, "zebra": 6.0}
         c, _, _ = self._rank(t)
-        # 5-letter singles: 800/1.75 = 457/s beat the ong trio: 1200/3.6 = 333/s
-        self.assertEqual([x["word"] for x in c], ["party", "zebra", "bong", "dong", "tong"])
-        self.assertEqual([x["group_size"] for x in c], [1, 1, 3, 3, 3])
-        self.assertEqual({x["rhyme"] for x in c[2:]}, {"ong"})
+        # groups of 2+ come before all singles, even 5-letter ones
+        self.assertEqual([x["word"] for x in c], ["bong", "dong", "tong", "party", "zebra"])
+        self.assertEqual([x["group_size"] for x in c], [3, 3, 3, 1, 1])
+        self.assertEqual({x["group_key"] for x in c[:3]}, {"bong"})
+        self.assertEqual([x["shared"] for x in c], [None, "ong", "ong", None, None])
+        self.assertNotIn("rhyme", c[0])
 
+    def test_seed_is_longest_then_common(self):
+        t = {"cats": 6.0, "bats": 5.2, "hats": 5.5, "chats": 5.0}
+        c, _, _ = self._rank(t)
+        # hats is contained in chats (suffix): not in its group, trails as a single
+        self.assertEqual([x["word"] for x in c], ["chats", "cats", "bats", "hats"])
+        self.assertEqual([x["group_key"] for x in c], ["chats", "chats", "chats", "hats"])
+        self.assertEqual([x["shared"] for x in c], [None, "ats", "ats", None])
+        c, _, _ = self._rank({"stabs": 5.0, "slabs": 5.5})
+        self.assertEqual(c[0]["word"], "slabs")
+        self.assertEqual(c[1]["group_key"], "slabs")
+
+    def test_cap_gives_second_group(self):
+        t = {w: 5.0 for w in ["bats", "cats", "fats", "hats", "mats", "pats", "rats", "sats"]}
+        c, _, _ = self._rank(t)
+        self.assertEqual([x["word"] for x in c],
+                         ["bats", "cats", "fats", "hats", "mats", "pats", "rats", "sats"])
+        self.assertEqual([x["group_size"] for x in c], [6] * 6 + [2] * 2)
+        self.assertEqual([x["group_key"] for x in c], ["bats"] * 6 + ["rats"] * 2)
+        self.assertEqual(wh.GROUP_MAX, 6)
+        self.assertEqual(len({x["word"] for x in c}), 8)  # each word in one group
+
+    def test_longer_match_beats_points(self):
+        t = {"brand": 5.0, "stand": 5.0, "bran": 5.0}
+        with mock.patch.object(wh, "GROUP_MAX", 2):
+            c, _, _ = self._rank(t)
+        # bran is contained in brand (prefix) so it cannot join; stand ("and") does
+        self.assertEqual([x["word"] for x in c], ["brand", "stand", "bran"])
+        self.assertEqual([x["group_size"] for x in c], [2, 2, 1])
+
+    def test_nested_forms_do_not_count_toward_cap(self):
+        base = ["bats", "cats", "fats", "hats", "mats", "pats"]
+        t = {w: 5.0 for w in base}
+        t.update({w + "x": 5.0 for w in base})
+        c, _, _ = self._rank(t, {w + "x": w for w in base})
+        self.assertEqual([x["group_size"] for x in c], [6] * 6)
+        self.assertEqual(c[0]["group_points"], 6 * 400 + 6 * 800)
+        self.assertEqual(sum(len(x["forms"]) for x in c), 6)
     def test_size_tie_longest_member(self):
         t = {"bat": 5.0, "cat": 5.0, "cuts": 5.0, "puts": 5.0}
         c, _, _ = self._rank(t)
@@ -199,14 +248,13 @@ class TestRareAndGrouping(unittest.TestCase):
         self.assertEqual([x["group_size"] for x in c], [4] * 4)
 
     def test_group_ties_zipf_then_key(self):
-        # equal rate, points, size: zipf no longer matters, key decides
-        t = {"bat": 5.0, "cat": 5.0, "bog": 6.0, "dog": 6.0}
+        # equal rate, points, size: zipf no longer matters, seed word decides
+        t = {"bats": 5.0, "cats": 5.0, "bogs": 6.0, "dogs": 6.0}
         c, _, _ = self._rank(t)
-        self.assertEqual([x["word"] for x in c], ["bat", "cat", "bog", "dog"])
-        t = {"bat": 5.0, "cat": 5.0, "bog": 5.0, "dog": 5.0}
+        self.assertEqual([x["word"] for x in c], ["bats", "cats", "bogs", "dogs"])
+        t = {"bats": 5.0, "cats": 5.0, "bogs": 5.0, "dogs": 5.0}
         c, _, _ = self._rank(t)
-        self.assertEqual([x["rhyme"] for x in c], ["at", "at", "og", "og"])
-
+        self.assertEqual([x["group_key"] for x in c], ["bats", "bats", "bogs", "bogs"])
     def test_nested_forms_do_not_change_group(self):
         t = {"bong": 5.0, "bongs": 5.0, "bonged": 5.0, "dong": 5.0, "tong": 5.0, "zzzz": 6.0}
         c, _, _ = self._rank(t, {"bongs": "bong", "bonged": "bong"})
@@ -217,9 +265,9 @@ class TestRareAndGrouping(unittest.TestCase):
     def test_standalone_form_groups_by_own_word(self):
         t = {"plans": 4.0, "plan": 5.5, "clans": 5.5}
         c, _, _ = self._rank(t, {"plans": "plan"}, found={"plans", "clans"})
-        self.assertEqual({x["rhyme"] for x in c}, {"ans"})
+        self.assertEqual([x["group_key"] for x in c], ["clans", "clans"])
+        self.assertEqual(c[1]["shared"], "lans")
         self.assertEqual(c[0]["group_size"], 2)
-
     def test_group_rate_exact(self):
         t = {"ring": 5.0, "sing": 5.0, "rings": 5.0}
         c, _, _ = self._rank(t, {"rings": "ring"})
@@ -231,22 +279,92 @@ class TestRareAndGrouping(unittest.TestCase):
             self.assertAlmostEqual(x["group_rate"], 1600 / 3.75)
             self.assertEqual(round(x["group_rate"], 2), 426.67)
 
-    def test_long_single_beats_short_pair(self):
-        t = {"abcdef": 5.0, "bat": 5.0, "cat": 5.0}
+    def test_higher_single_beats_pair(self):
+        t = {"abcdefgh": 5.0, "bats": 5.0, "cats": 5.0}
         c, _, _ = self._rank(t)
-        # 1400/1.9 = 737 vs 200/2.3 = 87
-        self.assertEqual([x["word"] for x in c], ["abcdef", "bat", "cat"])
-
-    def test_equal_rate_tiebreak_best_row_points(self):
-        # FIRST=1, no other cost: rate = group points. Single "zork" (400)
-        # ties the 4x3-letter "at" group (400); best row points break it.
-        t = {"zork": 5.0, "bat": 5.0, "cat": 5.0, "fat": 5.0, "hat": 5.0}
-        with mock.patch.object(wh, "FIND_FIRST_S", 1.0), \
+        # single worth 2200 outranks the pair (800) on total
+        self.assertEqual([x["word"] for x in c], ["abcdefgh", "bats", "cats"])
+        self.assertEqual([x["best_points"] for x in c], [2200, 400, 400])
+    def test_equal_rate_groups_then_single(self):
+        # FIRST=1, no other cost: rate = group points. Single "zork" (1600)
+        # ties the 4x400 "ats" group (1600) on total and rate; size decides.
+        t = {"zork": 5.0, "bats": 5.0, "cats": 5.0, "fats": 5.0, "hats": 5.0}
+        with mock.patch.object(wh, "score", side_effect=lambda w: 1600 if w == "zork" else 400), \
+             mock.patch.object(wh, "FIND_FIRST_S", 1.0), \
              mock.patch.object(wh, "FIND_NEXT_S", 0.0), \
              mock.patch.object(wh, "SWIPE_PER_LETTER_S", 0.0):
             c, _, _ = self._rank(t)
-        self.assertEqual([x["group_rate"] for x in c], [400.0] * 5)
-        self.assertEqual([x["word"] for x in c], ["zork", "bat", "cat", "fat", "hat"])
+        self.assertEqual([x["group_rate"] for x in c], [1600.0] * 5)
+        self.assertEqual([x["word"] for x in c], ["bats", "cats", "fats", "hats", "zork"])
+    def test_end_alignment_contained_word_does_not_group(self):
+        # ama is a suffix of lama, ist of mist: contained words stay out
+        t = {"lama": 5.0, "ama": 5.0, "mist": 5.0, "ist": 5.0}
+        c, _, _ = self._rank(t)
+        self.assertEqual(len(c), 4)
+        self.assertEqual([x["group_size"] for x in c], [1] * 4)
+        self.assertEqual(sorted(x["group_key"] for x in c), sorted(x["word"] for x in c))
+        self.assertTrue(all(x["shared"] is None for x in c))
+
+    def test_contained_word_not_in_seed_group(self):
+        rows = [{"word": w} for w in ("basis", "oasis", "sis", "bas")]
+        out = wh.group_rows(rows)
+        by = {x["word"]: x for x in out}
+        self.assertEqual(by["basis"]["group_key"], "basis")
+        self.assertEqual(by["oasis"]["group_key"], "basis")
+        self.assertEqual(by["basis"]["group_size"], 2)
+        self.assertNotEqual(by["sis"]["group_key"], "basis")
+        self.assertNotEqual(by["bas"]["group_key"], "basis")
+        self.assertEqual(wh.match_len("sis", "bas"), 0)
+        self.assertEqual(by["sis"]["group_size"], 1)
+        self.assertEqual(by["bas"]["group_size"], 1)
+
+    def test_lama_ama_do_not_group(self):
+        out = wh.group_rows([{"word": "lama"}, {"word": "ama"}])
+        self.assertEqual([x["group_size"] for x in out], [1, 1])
+
+    def test_bigger_total_beats_higher_best(self):
+        t = {"plant": 5.0, "slant": 5.0, "cogs": 5.0, "dogs": 5.0, "fogs": 5.0,
+             "hogs": 5.0, "logs": 5.0, "abcde": 5.0}
+        c, _, _ = self._rank(t)
+        # group of 5 (2000 points) outranks the best-800 pair (1600)
+        self.assertEqual([x["word"] for x in c],
+                         ["cogs", "dogs", "fogs", "hogs", "logs", "plant", "slant", "abcde"])
+        self.assertEqual(c[5]["best_points"], 800)
+        self.assertGreater(c[0]["group_points"], c[5]["group_points"])
+
+    def test_equal_best_bigger_group_points_first(self):
+        t = {"bats": 5.0, "cats": 5.0, "dogs": 5.0, "fogs": 5.0, "logs": 5.0}
+        c, _, _ = self._rank(t)
+        self.assertEqual([x["word"] for x in c], ["dogs", "fogs", "logs", "bats", "cats"])
+    def test_save_family_beats_smaller_group(self):
+        # save + saved + saver = 400 + 800 + 800 = 2000 as a single row
+        pts = {"plan": 1000, "clan": 800}  # 2-word group totalling 1800
+        t = {"save": 5.0, "saved": 5.0, "saver": 5.0, "plan": 5.0, "clan": 5.0}
+        with mock.patch.object(wh, "score", side_effect=lambda w: pts.get(w) or wh._SCORES[len(w)]):
+            c, _, _ = self._rank(t, {"saved": "save", "saver": "save"})
+        self.assertEqual([x["word"] for x in c], ["save", "clan", "plan"])
+        self.assertEqual([x["group_points"] for x in c], [2000, 1800, 1800])
+        self.assertEqual(c[0]["group_size"], 1)
+        self.assertEqual(c[0]["best_points"], 400)  # still exposed
+
+    def test_big_group_beats_single(self):
+        pts = {"bats": 1000, "cats": 1000, "fats": 1000, "hats": 1000, "mats": 1000, "pats": 1100,
+               "zork": 2000}  # six-word group = 6100
+        t = {w: 5.0 for w in pts}
+        with mock.patch.object(wh, "score", side_effect=pts.__getitem__):
+            c, _, _ = self._rank(t)
+        self.assertEqual([x["group_size"] for x in c], [6] * 6 + [1])
+        self.assertEqual(c[0]["group_points"], 6100)
+        self.assertEqual(c[-1]["word"], "zork")
+        self.assertEqual(c[-1]["group_points"], 2000)
+
+    def test_tie_on_total_broken_by_rate(self):
+        # single 800 (5-letter) vs 2 x 400 group: equal total, single is faster
+        t = {"abcde": 5.0, "bats": 5.0, "cats": 5.0}
+        c, _, _ = self._rank(t)
+        self.assertEqual([x["group_points"] for x in c], [800, 800, 800])
+        self.assertEqual([x["word"] for x in c], ["abcde", "bats", "cats"])
+        self.assertGreater(c[0]["group_rate"], c[1]["group_rate"])
 
     def test_rare_truncation_cap(self):
         rows = [{"word": f"w{i}x", "base": None, "forms": [f"w{i}xs"] * 2} for i in range(20)]
@@ -255,7 +373,7 @@ class TestRareAndGrouping(unittest.TestCase):
 
     def test_format_output_three_columns_and_width(self):
         def mk(p):
-            return [{"word": f"{p}{i}xx", "base": None, "forms": [], "rhyme": "x", "group_size": 1}
+            return [{"word": f"{p}{i}xx", "base": None, "forms": [], "group_key": "x", "group_size": 1}
                     for i in range(40)]
         with mock.patch.object(wh, "zipf", return_value=3.0):
             out = wh.format_output("A" * 16, mk("a"), mk("b"), mk("c"), 1.0)
@@ -383,6 +501,171 @@ class TestBlocklist(unittest.TestCase):
         found = wh.solve(board, trie)
         self.assertNotIn("plan", found)
         self.assertIn("plans", found)
+
+
+class TestAllowlist(unittest.TestCase):
+    def _tmp(self, text):
+        f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+        f.write(text)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def test_parse(self):
+        p = self._tmp("# header\n\n  Lande \nFOO\n   # c\n")
+        self.assertEqual(wh.load_allowlist(p), {"lande", "foo"})
+
+    def test_missing(self):
+        self.assertEqual(wh.load_allowlist("/nonexistent/allowlist.txt"), set())
+
+    def test_shipped_file_has_lande(self):
+        self.assertIn("lande", wh.load_allowlist())
+
+    def test_non_web2_word_in_trie_and_found(self):
+        board = "XYZZAAAYAAAAAAAA"
+        empty = self._tmp("")
+        trie, dm = wh.startup(empty, empty)
+        self.assertNotIn("xyzzy", wh.solve(board, trie))
+        trie, dm = wh.startup(empty, self._tmp("XYZZY\n"))
+        self.assertIn("xyzzy", wh.solve(board, trie))
+
+    def test_blocklist_beats_allowlist(self):
+        board = "XYZZAAAYAAAAAAAA"
+        p = self._tmp("xyzzy\n")
+        trie, dm = wh.startup(p, p)
+        self.assertNotIn("xyzzy", wh.solve(board, trie))
+
+    def test_lande_groups_with_land(self):
+        empty = self._tmp("")
+        trie, dm = wh.startup(empty, self._tmp("lande\n"))
+        self.assertNotIn("lande", dm)
+        self.assertEqual(dm["lander"], "land")
+        paths = wh.solve_paths("LAND" "AARE" "AAAA" "AAAA", trie)
+        for w in ("land", "lande", "lander"):
+            self.assertIn(w, paths)
+        rows = {r["word"]: r for r in sum(wh.rank(paths, dm), [])}
+        self.assertEqual(rows["land"]["forms"], ["lander"])
+        self.assertEqual(rows["lande"]["group_key"], rows["land"]["group_key"])
+
+    def test_hote_not_form_of_hot(self):
+        empty = self._tmp("")
+        trie, dm = wh.startup(empty, self._tmp("hote\n"))
+        self.assertNotEqual(dm.get("hote"), "hot")
+
+    def test_allowlisted_no_base_is_top_level_row(self):
+        empty = self._tmp("")
+        trie, dm = wh.startup(empty, self._tmp("lande\n"))
+        rows = sum(wh.rank({"lande"}, dm), [])
+        self.assertEqual([(r["word"], r["base"]) for r in rows], [("lande", None)])
+
+    def test_allowlisted_never_group_only(self):
+        empty = self._tmp("")
+        trie, dm = wh.startup(empty, self._tmp("lande\nqzxv\n"))
+        self.assertFalse({"lande", "qzxv"} & dm.group_only)
+
+    def test_low_zipf_no_base_goes_rare(self):
+        empty = self._tmp("")
+        trie, dm = wh.startup(empty, self._tmp("qzxv\nzxq\n"))
+        self.assertNotIn("qzxv", dm)
+        c, l, r = wh.rank({"qzxv", "zxq"}, dm)
+        self.assertEqual((c, l), ([], []))
+        self.assertEqual(sorted(x["word"] for x in r), ["qzxv", "zxq"])  # even 3 letters
+        # without the allowlist the same words are dropped
+        c, l, r = wh.rank({"qzxv", "zxq"}, {})
+        self.assertEqual((c, l, r), ([], [], []))
+
+
+class TestOneLetterAndCrossTier(unittest.TestCase):
+    def _rank(self, table, dm=None):
+        with mock.patch.object(wh, "zipf", side_effect=table.__getitem__):
+            return wh.rank(set(table), dm)
+
+    def test_one_letter_matches(self):
+        for a, b in [("vote", "note"), ("vote", "dote"), ("vote", "hote"),
+                     ("note", "hote"), ("cat", "cot"), ("bat", "cat")]:
+            self.assertGreaterEqual(wh.match_len(a, b), wh.MIN_SHARED if len(a) > 3 else 2, (a, b))
+        self.assertEqual(wh.match_len("cat", "cot"), 2)
+        self.assertEqual(wh.match_len("vote", "note"), 3)
+
+    def test_one_letter_non_matches(self):
+        self.assertFalse(wh._one_off("vote", "votes"))  # different length: rule does not apply
+        self.assertEqual(wh.match_len("cat", "cut"), 2)
+        self.assertEqual(wh.match_len("cats", "cuts"), 3)  # hamming 1 -> len-1
+        self.assertEqual(wh.match_len("cats", "cuds"), 0)  # hamming 2, no run
+        self.assertEqual(wh.match_len("vote", "vita"), 0)
+
+    def test_one_letter_group_below_min_shared_len3(self):
+        # 3-letter words: len-1 = 2 < MIN_SHARED, so they do not group
+        c, _, _ = self._rank({"cat": 6.0, "cot": 6.0})
+        self.assertEqual([x["group_size"] for x in c], [1, 1])
+
+    def test_common_seed_pulls_rarer_variants_up(self):
+        t = {"vote": 5.5, "note": 5.2, "rote": 3.5, "dote": 2.8, "hote": 2.7}
+        c, l, r = self._rank(t)
+        self.assertEqual(l, [])
+        self.assertEqual(r, [])
+        self.assertEqual({x["word"] for x in c}, set(t))
+        self.assertEqual({x["group_key"] for x in c}, {"vote"})
+        self.assertEqual(c[0]["word"], "vote")
+
+    def test_rare_seed_never_pulls_common_down(self):
+        t = {"tether": 2.8, "other": 5.5}
+        c, l, r = self._rank(t)
+        # other (common) stays in Common as the seed; the rarer tether is
+        # pulled UP into its group. Nothing common moves to Rare.
+        self.assertEqual([x["word"] for x in c], ["other", "tether"])
+        self.assertEqual(c[1]["group_key"], "other")
+        self.assertEqual(r, [])
+
+    def test_pulled_up_word_in_one_group_and_sums(self):
+        t = {"vote": 5.5, "note": 3.5, "tote": 2.8, "bats": 5.1}
+        c, l, r = self._rank(t)
+        self.assertEqual([x["word"] for x in c], ["vote", "note", "tote", "bats"])
+        self.assertEqual((l, r), ([], []))
+        words = [x["word"] for x in c]
+        self.assertEqual(len(words), len(set(words)))
+        g = [x for x in c if x["group_key"] == "vote"]
+        self.assertEqual(g[0]["group_points"], 3 * wh.score("vote"))
+        self.assertTrue(all(x["group_points"] == g[0]["group_points"] for x in g))
+        self.assertEqual(c[-1]["group_points"], wh.score("bats"))
+
+
+class TestGroupOnly(unittest.TestCase):
+    def _dm(self, *words):
+        dm = wh.DerivedMap()
+        dm.group_only = frozenset(words)
+        return dm
+
+    def _rank(self, table, dm):
+        with mock.patch.object(wh, "zipf", side_effect=table.__getitem__):
+            return wh.rank(set(table), dm)
+
+    def test_joins_matching_seed(self):
+        c, l, r = self._rank({"vote": 5.5, "dote": 2.23}, self._dm("dote"))
+        self.assertEqual([x["word"] for x in c], ["vote", "dote"])
+        self.assertEqual(c[1]["group_key"], "vote")
+        self.assertEqual((l, r), ([], []))
+
+    def test_unmatched_dropped_from_output_and_totals(self):
+        c, l, r = self._rank({"vote": 5.5, "zzzz": 2.2}, self._dm("zzzz"))
+        self.assertEqual([x["word"] for x in c], ["vote"])
+        self.assertEqual((l, r), ([], []))
+        self.assertEqual(len(wh.tier_words(c) + wh.tier_words(l) + wh.tier_words(r)), 1)
+
+    def test_never_seeds(self):
+        c, l, r = self._rank({"dote": 2.2, "hote": 2.1}, self._dm("dote", "hote"))
+        self.assertEqual((c, l, r), ([], [], []))
+
+    def test_joins_rare_seed_but_not_seeds_common_group_down(self):
+        c, l, r = self._rank({"tether": 2.8, "other": 2.2}, self._dm("other"))
+        self.assertEqual([x["word"] for x in r], ["tether", "other"])
+        self.assertEqual(r[1]["group_key"], "tether")
+
+    def test_cap_applies(self):
+        t = {"vote": 5.5}
+        t.update({w: 2.2 for w in ("note", "dote", "hote", "rote", "cote", "tote", "mote")})
+        c, _, _ = self._rank(t, self._dm(*[w for w in t if w != "vote"]))
+        self.assertEqual(len(c), wh.GROUP_MAX)
 
 
 class TestIntegration(unittest.TestCase):
