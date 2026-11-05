@@ -142,13 +142,15 @@ class TestInflections(unittest.TestCase):
         self.assertIn("simply", wh.inflections("simple"))
 
     def test_generate_filter(self):
-        freq = {"plans": 1e-3, "planned": 1e-4, "eated": 0, "eat": 1e-3, "eats": 1e-8,
-                "eaten": 9.9e-9, "eating": 9.9e-9}
+        t = 10 ** (wh.DERIVED_MIN_ZIPF - 9)
+        freq = {"plans": 1e-3, "planned": 1e-4, "eated": 0, "eat": 1e-3, "eats": t,
+                "eaten": t * 0.99, "eating": t * 0.99}
         d = wh.generate_derived({"plan", "eat"}, freq)
         self.assertEqual(d, {"plans": "plan", "planned": "plan", "eats": "eat"})
 
     def test_threshold_exact(self):
-        d = wh.generate_derived({"abc"}, {"abcs": 1e-8, "abced": 9.9e-9})
+        t = 10 ** (wh.DERIVED_MIN_ZIPF - 9)
+        d = wh.generate_derived({"abc"}, {"abcs": t, "abced": t * 0.99})
         self.assertEqual(d, {"abcs": "abc"})
 
     def test_highest_base_wins(self):
