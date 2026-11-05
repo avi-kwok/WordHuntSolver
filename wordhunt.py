@@ -12,6 +12,8 @@ END = "$"
 COMMON_MIN = 5.0
 MIN_ZIPF = 3.0
 LESS_MIN = MIN_ZIPF
+RARE_MIN_ZIPF = 2.5
+RARE_MIN_LEN = 4
 DERIVED_MIN_ZIPF = 2.0
 TOP_N = 30
 _SCORES = {3: 100, 4: 400, 5: 800, 6: 1400, 7: 1800, 8: 2200}
@@ -198,37 +200,89 @@ def generate_derived(bases, freq_dict, min_zipf=DERIVED_MIN_ZIPF):
     return resolve_chains({w: b for w, (_, b) in best.items()})
 
 
-def rank(found, derived_map=None):
-    """Return (common, less_common) lists of rows.
+def rhyme_key(word):
+    """`word` minus its leading consonant onset (its spelled rhyme ending).
 
-    Row: {"word", "base", "forms"}. Forms found with their base nest under it;
-    a form found without its base is its own row with `base` set. Tier is
-    decided by the base's zipf (< 3 dropped). Rows sort by length desc,
-    zipf desc, then alphabetical; forms sort the same way under their base.
+    y is a consonant only at index 0; u right after a leading q joins the
+    onset. A vowel-initial word is its own key; an all-consonant word too.
+    """
+    n = len(word)
+    i = 0
+    while i < n and word[i] not in _VOWELS and not (word[i] == "y" and i > 0):
+        i += 1
+    if i == n:
+        return word
+    if i and word[i - 1] == "q" and word[i] == "u":
+        i += 1
+    return word[i:]
+
+
+def group_rows(rows):
+    """Order top-level rows of one tier into contiguous rhyme groups.
+
+    Sets row["rhyme"] and row["group_size"]. Groups: size desc, longest
+    member desc, best member zipf desc, key. Rows in a group: (-len, -zipf, word).
+    """
+    key = lambda r: (-len(r["word"]), -zipf(r["word"]), r["word"])
+    groups = {}
+    for r in rows:
+        groups.setdefault(rhyme_key(r["word"]), []).append(r)
+    ordered = []
+    for k, g in groups.items():
+        g.sort(key=key)
+        for r in g:
+            r["rhyme"], r["group_size"] = k, len(g)
+        ordered.append((-len(g), -len(g[0]["word"]),
+                        -max(zipf(r["word"]) for r in g), k, g))
+    ordered.sort(key=lambda t: t[:4])
+    return [r for t in ordered for r in t[4]]
+
+
+def rank(found, derived_map=None):
+    """Return (common, less_common, rare) lists of rows.
+
+    Row: {"word", "base", "forms", "rhyme", "group_size"}. Forms found with
+    their base nest under it; a form found without its base is its own row
+    with `base` set. Tier is decided by the base's zipf (< 2.5 dropped).
+    Rare (2.5 <= zipf < 3) shows only words of 4+ letters; a 3-letter rare
+    base counts as not found, so its forms stand alone. Tiers are grouped
+    by rhyme_key over top-level rows; forms sort (-len, -zipf, word).
     """
     dm = derived_map or {}
     found = set(found)
+
+    def usable_base(b):
+        return b in found and (zipf(b) >= LESS_MIN or len(b) >= RARE_MIN_LEN)
+
     rows = {}
     nested = {}
     for w in found:
         root = dm.get(w)
         if root is None:
             rows[w] = {"word": w, "base": None, "forms": []}
-        elif root in found:
+        elif usable_base(root):
             nested.setdefault(root, []).append(w)
         else:
             rows[w] = {"word": w, "base": root, "forms": []}
     key = lambda w: (-len(w), -zipf(w), w)
-    common, less = [], []
+    common, less, rare = [], [], []
     for w, row in rows.items():
         z = zipf(row["base"] or w)
-        if z < LESS_MIN:
+        if z < RARE_MIN_ZIPF:
             continue
-        row["forms"] = sorted(nested.get(w, []), key=key)
-        (common if z >= COMMON_MIN else less).append(row)
-    common.sort(key=lambda r: key(r["word"]))
-    less.sort(key=lambda r: key(r["word"]))
-    return common, less
+        forms = nested.get(w, [])
+        if z >= COMMON_MIN:
+            tier = common
+        elif z >= LESS_MIN:
+            tier = less
+        else:
+            if len(w) < RARE_MIN_LEN:
+                continue
+            tier = rare
+            forms = [f for f in forms if len(f) >= RARE_MIN_LEN]
+        row["forms"] = sorted(forms, key=key)
+        tier.append(row)
+    return group_rows(common), group_rows(less), group_rows(rare)
 
 
 def truncate_rows(rows, limit=TOP_N):
@@ -279,25 +333,26 @@ def _lines(rows):
     return out
 
 
-def format_output(board, common, less, ms):
+def format_output(board, common, less, rare, ms):
     lines = []
     for r in range(SIZE):
         lines.append(" ".join(board[r * SIZE:(r + 1) * SIZE]))
     lines.append("")
     width = 31
-    lines.append(f"{'COMMON (zipf >= 5)':<{width}}  LESS COMMON (zipf 3-5)")
-    lines.append(f"{'-' * width}  {'-' * width}")
-    a, na = truncate_rows(common)
-    b, nb = truncate_rows(less)
-    la, lb = _lines(a), _lines(b)
-    for i in range(max(len(la), len(lb))):
-        left = la[i] if i < len(la) else ""
-        right = lb[i] if i < len(lb) else ""
-        lines.append(f"{left:<{width}}  {right}".rstrip())
+    heads = ["COMMON (zipf >= 5)", "LESS COMMON (zipf 3-5)",
+             f"RARE (zipf {RARE_MIN_ZIPF:g}-{MIN_ZIPF:g}, {RARE_MIN_LEN}+)"]
+    lines.append("  ".join(f"{h:<{width}}" for h in heads).rstrip())
+    lines.append("  ".join("-" * width for _ in heads))
+    tiers = [truncate_rows(t) for t in (common, less, rare)]
+    cols = [_lines(t[0]) for t in tiers]
+    for i in range(max(len(c) for c in cols)):
+        cells = [c[i] if i < len(c) else "" for c in cols]
+        lines.append("  ".join(f"{c:<{width}}" for c in cells).rstrip())
     lines.append("")
-    words = tier_words(common) + tier_words(less)
-    lines.append(f"Common: shown {na} of {len(tier_words(common))}")
-    lines.append(f"Less common: shown {nb} of {len(tier_words(less))}")
+    for name, t, (_, n) in zip(("Common", "Less common", "Rare"),
+                               (common, less, rare), tiers):
+        lines.append(f"{name}: shown {n} of {len(tier_words(t))}")
+    words = tier_words(common) + tier_words(less) + tier_words(rare)
     total = sum(score(w) for w in words)
     lines.append(f"Total: {len(words)} words, {total} points")
     lines.append(f"Solve time: {ms:.1f} ms")
@@ -306,9 +361,9 @@ def format_output(board, common, less, ms):
 
 def run(board, trie, derived_map):
     t = time.perf_counter()
-    common, less = rank(solve(board, trie), derived_map)
+    common, less, rare = rank(solve(board, trie), derived_map)
     ms = (time.perf_counter() - t) * 1000
-    print(format_output(board, common, less, ms))
+    print(format_output(board, common, less, rare, ms))
 
 
 def startup(blocklist_path=BLOCKLIST_PATH):
@@ -325,9 +380,9 @@ def startup(blocklist_path=BLOCKLIST_PATH):
     all_words = load_dictionary()
     lowered = set(get_english_words_set(["web2"], lower=True, alpha=True))
     size_ok = lambda w: 3 <= len(w) <= CELLS
-    proper = len(filter_common({w for w in lowered - all_words if size_ok(w)}, freq))
+    proper = len(filter_common({w for w in lowered - all_words if size_ok(w)}, freq, RARE_MIN_ZIPF))
     sized = {w for w in all_words if size_ok(w)}
-    bases = filter_common(sized, freq)
+    bases = filter_common(sized, freq, RARE_MIN_ZIPF)
     derived_map = generate_derived(bases, freq)
     blocked = load_blocklist(blocklist_path)
     n_blocked = len((bases | set(derived_map)) & blocked)
@@ -335,9 +390,9 @@ def startup(blocklist_path=BLOCKLIST_PATH):
     derived_map = {w: b for w, b in derived_map.items() if w not in blocked}
     trie = build_trie((bases | set(derived_map)) - blocked)
     ms = (time.perf_counter() - t) * 1000
-    print(f"Loaded {len(bases)} base + {len(derived_map)} derived words "
-          f"(zipf >= {MIN_ZIPF:g}; forms >= {DERIVED_MIN_ZIPF:g}; "
-          f"{proper} proper nouns removed; {n_blocked} blocked) in {ms:.0f} ms")
+    print(f"Loaded {len(bases)} base + {len(derived_map)} derived words in {ms:.0f} ms")
+    print(f"  zipf >= {MIN_ZIPF:g}; rare >= {RARE_MIN_ZIPF:g} ({RARE_MIN_LEN}+ letters); "
+          f"forms >= {DERIVED_MIN_ZIPF:g}; {proper} proper nouns removed; {n_blocked} blocked")
     return trie, derived_map
 
 

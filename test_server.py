@@ -52,13 +52,22 @@ class TestBuildResult(unittest.TestCase):
     def test_result(self):
         r = server.build_result(BOARD, trie, dmap)
         self.assertGreater(r["total_words"], 347)
-        for k in ("common", "less_common"):
+        for k in ("common", "less_common", "rare"):
             self.assertLessEqual(sum(1 + len(x["forms"]) for x in r[k]), 30)
             check_paths(self, BOARD, r[k])
             for row in r[k]:
                 self.assertIn("base", row)
+                self.assertIsInstance(row["rhyme"], str)
+                self.assertGreaterEqual(row["group_size"], 1)
                 self.assertIsInstance(row["forms"], list)
         self.assertTrue(any(x["forms"] for x in r["common"] + r["less_common"]))
+        self.assertIn("rare", r)
+        self.assertGreater(r["rare_total"], 0)
+        self.assertEqual(r["total_words"], r["common_total"] + r["less_common_total"] + r["rare_total"])
+        for row in r["rare"]:
+            self.assertGreaterEqual(len(row["word"]), wh.RARE_MIN_LEN)
+            for f in row["forms"]:
+                self.assertGreaterEqual(len(f["word"]), wh.RARE_MIN_LEN)
         self.assertGreater(r["common_total"], 30)
 
 

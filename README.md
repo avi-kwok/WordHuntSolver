@@ -20,11 +20,11 @@ Board = 16 letters, row-major (left to right, top to bottom), case-insensitive.
 ## Algorithm
 1. Load `web2` word list (english-words).
 2. Build one trie at startup from words of length 3-16 (nested dicts, terminal key `$` holds the word), reused for every board.
-3. Startup prefilter: keep only words with zipf >= 3 (via wordfreq's frequency dict) before building the trie.
+3. Startup prefilter: keep only words with zipf >= 2.5 (`RARE_MIN_ZIPF`; via wordfreq's frequency dict) before building the trie.
 4. DFS from each cell, walking the trie in lockstep; visited cells tracked as a 16-bit bitmask; prune as soon as the trie has no child for the next letter.
 
 ## Inflected forms
-web2 lacks most plurals and inflections. At startup, for every base word (web2, 3-16 letters, zipf >= 3) the program generates candidate forms (-s/-es, -ed, -ing, -er/-est/-ers, -ly, with spelling variants such as e-drop, y to ies, consonant doubling) and keeps those whose wordfreq frequency gives zipf >= 2 (checked against `get_frequency_dict`, no per-word lookup). Forms are added to the trie and mapped to a base (highest-frequency base wins; chains resolve to the root). In results a found form nests under its base's row, or stands alone labelled with its base if the base is not on the board. Tier is decided by the base's zipf. Each column shows at most 30 lines (base rows plus forms, in order; a group may be cut partway); totals count every found word.
+web2 lacks most plurals and inflections. At startup, for every base word (web2, 3-16 letters, zipf >= 2.5) the program generates candidate forms (-s/-es, -ed, -ing, -er/-est/-ers, -ly, with spelling variants such as e-drop, y to ies, consonant doubling) and keeps those whose wordfreq frequency gives zipf >= 2 (checked against `get_frequency_dict`, no per-word lookup). Forms are added to the trie and mapped to a base (highest-frequency base wins; chains resolve to the root). In results a found form nests under its base's row, or stands alone labelled with its base if the base is not on the board. Tier is decided by the base's zipf. Each column shows at most 30 lines (base rows plus forms, in order; a group may be cut partway); totals count every found word.
 
 ## Scoring
 3=100, 4=400, 5=800, 6=1400, 7=1800, 8=2200, then +400 per letter beyond 8.
@@ -33,16 +33,19 @@ web2 lacks most plurals and inflections. At startup, for every base word (web2, 
 Frequency via `wordfreq.zipf_frequency(word, 'en')`.
 - COMMON: zipf >= 5.0
 - LESS COMMON: 3.0 <= zipf < 5.0
-- zipf < 3.0: dropped (not shown, not counted)
+- RARE: 2.5 <= zipf < 3.0, words of 4+ letters only (bases, nested forms and standalone forms alike). A 3-letter rare base counts as not found, so its 4+ letter forms appear as standalone "from base" rows.
+- zipf < 2.5: dropped (not shown, not counted)
 
-Each tier sorts by length desc, then zipf desc, then alphabetical. Top 30 per tier shown; totals cover all words with zipf >= 3.
+Rhyme grouping: within each tier, top-level rows (bases and standalone forms) are grouped by `rhyme_key(word)`, the word minus its leading consonant onset (`y` is a consonant only first; `u` after a leading `q` joins the onset; vowel-initial or all-consonant words keep the whole word). Groups order by size desc, longest member desc, best zipf desc, key; rows within a group by length desc, zipf desc, alphabetical. Nested forms do not affect grouping. Rank numbers run continuously and the 30-line cap applies after grouping (a group may be cut). The UI shades groups of 2+ and tags the first row (e.g. `-ONG x3`).
+
+Each column shows the top 30 lines; totals (words and points) cover all three tiers.
 
 ## Web UI
 Local only (binds 127.0.0.1), stdlib only, no extra dependencies.
 ```
 .venv/bin/python server.py [--port 8000]
 ```
-Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 16 letters), press Solve, then click a result row to see its path on the mini board. API: `POST /api/solve` with `{"board": "<16 letters>"}` returns the top 30 per tier with paths plus totals. Tests: `.venv/bin/python test_server.py`.
+Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 16 letters), press Solve, then click a result row to see its path on the mini board. API: `POST /api/solve` with `{"board": "<16 letters>"}` returns `common`, `less_common` and `rare` (top 30 lines each, rows carry `rhyme` and `group_size`) with paths, plus `*_total` counts and overall totals. Tests: `.venv/bin/python test_server.py`.
 
 ## Version history
 - **v1**: Trie + DFS solver, dictionary + frequency for reasonable results
@@ -52,3 +55,4 @@ Open http://127.0.0.1:8000. Enter the board in the 4x4 grid (or paste/type all 1
 - **v6**: Grouped suffix/prefix words
 - **v7**: Improved cutoff for better results
 - **v8**: Excluded proper nouns + created blocklist
+- **v9**: Grouped spelling rhymes for faster inputs

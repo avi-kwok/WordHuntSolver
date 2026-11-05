@@ -10,7 +10,7 @@
 html,body{margin:0;overflow-x:hidden}
 body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);
  background:linear-gradient(160deg,var(--bg),var(--bg2));min-height:100vh;padding:16px 12px 32px}
-main{max-width:640px;margin:0 auto}
+main{max-width:900px;margin:0 auto}
 h1{margin:0 0 14px;text-align:center;color:#fff8ea;font-weight:900;letter-spacing:1px;font-size:1.5rem;text-shadow:0 2px 0 rgba(0,0,0,.2)}
 .hidden{display:none!important}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:12px;background:rgba(60,30,10,.35);border-radius:20px;max-width:360px;margin:0 auto}
@@ -33,22 +33,28 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .tile.on{background:var(--tile-hi)}
 .tile.start{background:var(--tile-start);color:#fff}
 .mini svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-.cols{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.col{background:var(--card);border-radius:14px;padding:8px 6px;box-shadow:0 3px 8px rgba(0,0,0,.25)}
+.cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.col{min-width:0;background:var(--card);border-radius:14px;padding:8px 6px;box-shadow:0 3px 8px rgba(0,0,0,.25)}
 .col h2{margin:0 0 6px;font-size:.9rem;text-align:center}
 .row{display:grid;grid-template-columns:1.6em 1fr auto auto;gap:5px;align-items:baseline;padding:5px 4px;border-radius:8px;cursor:pointer;font-size:.8rem}
 .row:hover{background:#f3e2bd}
 .row.sub{padding-left:1.4em;font-size:.9em;opacity:.85}
 .row.sub .w{font-weight:700}
 .tag{font-size:.65em;font-weight:700;color:var(--muted);margin-left:4px;text-transform:none;letter-spacing:0}
+.row.g0{background:rgba(201,129,74,.16)}
+.row.g1{background:rgba(90,120,160,.16)}
+.row:hover{background:#f3e2bd}
 .row.sel{background:var(--tile-hi)}
+.gt{font-size:.62em;font-weight:800;color:var(--muted);margin-left:4px;letter-spacing:0;white-space:nowrap}
 .row .r{color:var(--muted);text-align:right}
-.row .w{font-weight:900;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis}
+.row .w{font-weight:900;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .row .p{text-align:right;font-variant-numeric:tabular-nums}
 .row .z{color:var(--muted);font-size:.7rem;width:2em;text-align:right}
 .foot{margin:14px 0 0;color:#fff8ea;text-align:center;font-weight:600;font-size:.85rem;line-height:1.6}
 .empty{color:var(--muted);text-align:center;padding:8px;font-size:.8rem}
-@media(min-width:480px){.row{font-size:.95rem}.row .z{font-size:.8rem}.col h2{font-size:1rem}}
+@media(min-width:520px){.row{font-size:.85rem}.row .z{font-size:.75rem}.col h2{font-size:.95rem}}
+@media(min-width:760px){.row{font-size:.95rem}.row .z{font-size:.8rem}.col h2{font-size:1rem}}
+@media(max-width:519px){.row .z{display:none}.row{grid-template-columns:1.5em 1fr auto;gap:3px;padding:4px 2px;font-size:.62rem}.col{padding:6px 3px}.col h2{font-size:.7rem}.row.sub{padding-left:.8em}body{padding-left:8px;padding-right:8px}}
 </style>
 </head>
 <body>
@@ -72,6 +78,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
  <div class="cols">
   <div class="col"><h2>Common</h2><div id="c1"></div></div>
   <div class="col"><h2>Less common</h2><div id="c2"></div></div>
+  <div class="col"><h2>Rare</h2><div id="c3"></div></div>
  </div>
  <p class="foot" id="foot"></p>
  <div class="btns"><button class="primary" id="newb">New board</button></div>
@@ -161,9 +168,10 @@ function show(d){
  mini.innerHTML="";tiles=[];
  for(var i=0;i<16;i++){var t=document.createElement("div");t.className="tile";t.textContent=d.board[i];mini.appendChild(t);tiles.push(t)}
  lines.innerHTML="";
- col($("c1"),d.common);col($("c2"),d.less_common);
+ col($("c1"),d.common);col($("c2"),d.less_common);col($("c3"),d.rare);
  $("foot").innerHTML="Common: shown "+countLines(d.common)+" of "+d.common_total+
   "<br>Less common: shown "+countLines(d.less_common)+" of "+d.less_common_total+
+  "<br>Rare: shown "+countLines(d.rare)+" of "+d.rare_total+
   "<br>"+d.total_words+" words, "+d.total_points+" points<br>Solved in "+d.solve_ms+" ms";
 }
 var sel=null;
@@ -172,21 +180,26 @@ function col(el,rows){
  el.innerHTML="";
  if(!rows.length){el.innerHTML='<div class="empty">none</div>';return}
  var n=0;
- function add(r,cls,rank,base){
-  var d=document.createElement("div");d.className="row"+cls;
+ function add(r,cls,rank,base,gi,first){
+  var d=document.createElement("div");d.className="row"+cls+(gi>=0?" g"+(gi%2):"");
   d.innerHTML='<span class="r"></span><span class="w"></span><span class="p">'+r.points+'</span><span class="z">'+r.zipf.toFixed(1)+'</span>';
   d.querySelector(".r").textContent=rank;
   var w=d.querySelector(".w");w.textContent=r.word.toUpperCase();
   if(base){var t=document.createElement("span");t.className="tag";t.textContent="from "+base.toUpperCase();w.appendChild(t)}
+  if(first&&r.group_size>=2){var g=document.createElement("span");g.className="gt";g.textContent="-"+r.rhyme.toUpperCase()+" \u00d7"+r.group_size;w.appendChild(g)}
   d.onclick=function(){
    if(sel)sel.classList.remove("sel");
    sel=d;d.classList.add("sel");highlight(r.path);
   };
   el.appendChild(d);
  }
+ var gi=-1,prev=null;
  rows.forEach(function(r){
-  add(r,"",++n+".",r.base);
-  r.forms.forEach(function(f){add(f," sub","+",null)});
+  var multi=r.group_size>=2,first=r.rhyme!==prev;
+  if(first){prev=r.rhyme;if(multi)gi++}
+  var g=multi?gi:-1;
+  add(r,"",++n+".",r.base,g,first);
+  r.forms.forEach(function(f){add(f," sub","+",null,g,false)});
  });
 }
 function center(i){return [((i%4)+0.5)*25,(Math.floor(i/4)+0.5)*25]}

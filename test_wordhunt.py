@@ -66,42 +66,43 @@ class TestFilterCommon(unittest.TestCase):
 class TestRank(unittest.TestCase):
     def _rank(self, table, dm=None, found=None):
         with mock.patch.object(wh, "zipf", side_effect=table.__getitem__):
-            c, l = wh.rank(found if found is not None else set(table), dm)
-        return c, l
+            c, l, r = wh.rank(found if found is not None else set(table), dm)
+        return c, l, r
 
     def test_tiers(self):
-        c, l = self._rank({"aaa": 5.0, "bbb": 4.99, "ccc": 3.0, "ddd": 2.99})
+        c, l, r = self._rank({"aaa": 5.0, "bbb": 4.99, "ccc": 3.0, "ddd": 2.99})
         self.assertEqual([r["word"] for r in c], ["aaa"])
-        self.assertEqual([r["word"] for r in l], ["bbb", "ccc"])
+        self.assertEqual([x["word"] for x in l], ["bbb", "ccc"])
+        self.assertEqual(r, [])  # ddd: zipf 2.99 is rare but only 3 letters
 
     def test_sort(self):
-        c, _ = self._rank({"abcd": 5.5, "zzz": 6.0, "aaa": 6.0, "bbb": 5.1, "wxyz": 5.9})
+        c, _, _ = self._rank({"abcd": 5.5, "zzz": 6.0, "aaa": 6.0, "bbb": 5.1, "wxyz": 5.9})
         self.assertEqual([r["word"] for r in c], ["wxyz", "abcd", "aaa", "zzz", "bbb"])
 
     def test_same_length_zipf_decides(self):
-        c, _ = self._rank({"zzzz": 6.0, "aaaa": 5.5})
+        c, _, _ = self._rank({"zzzz": 6.0, "aaaa": 5.5})
         self.assertEqual([r["word"] for r in c], ["zzzz", "aaaa"])
 
     def test_form_nested_points_dont_reorder(self):
         t = {"plan": 5.5, "plans": 5.0, "zzzz": 5.8}
-        c, _ = self._rank(t, {"plans": "plan"})
+        c, _, _ = self._rank(t, {"plans": "plan"})
         self.assertEqual([r["word"] for r in c], ["zzzz", "plan"])
         self.assertEqual(c[1]["forms"], ["plans"])
         self.assertIsNone(c[1]["base"])
 
     def test_standalone_form(self):
-        c, l = self._rank({"plans": 4.0, "plan": 5.5}, {"plans": "plan"}, found={"plans"})
+        c, l, _ = self._rank({"plans": 4.0, "plan": 5.5}, {"plans": "plan"}, found={"plans"})
         self.assertEqual(l, [])
         self.assertEqual(c[0]["word"], "plans")
         self.assertEqual(c[0]["base"], "plan")
 
     def test_tier_follows_base(self):
         t = {"great": 4.9, "greatest": 6.0}
-        c, l = self._rank(t, {"greatest": "great"})
+        c, l, _ = self._rank(t, {"greatest": "great"})
         self.assertEqual(c, [])
         self.assertEqual(l[0]["forms"], ["greatest"])
         t = {"big": 5.5, "bigly": 3.5}
-        c, l = self._rank(t, {"bigly": "big"})
+        c, l, _ = self._rank(t, {"bigly": "big"})
         self.assertEqual(l, [])
         self.assertEqual(c[0]["forms"], ["bigly"])
 
@@ -128,6 +129,111 @@ class TestRank(unittest.TestCase):
         out, n = wh.truncate_rows(rows)
         self.assertEqual(out[1]["forms"], ["bs"])
         self.assertEqual(rows[1]["forms"], ["bs", "bd", "bx"])
+
+
+class TestRhymeKey(unittest.TestCase):
+    def test_examples(self):
+        for words, key in [(["bong", "dong", "tong", "wrong"], "ong"),
+                           (["part", "start", "smart", "chart", "art", "quart"], "art"),
+                           (["stranger", "danger", "ranger"], "anger"),
+                           (["line", "spine", "shine"], "ine"),
+                           (["style"], "yle"), (["yarn"], "arn"),
+                           (["rhythm"], "ythm"), (["nth"], "nth"), (["eat"], "eat")]:
+            for w in words:
+                self.assertEqual(wh.rhyme_key(w), key, w)
+
+    def test_qu_and_y(self):
+        self.assertEqual(wh.rhyme_key("squat"), "at")
+        self.assertEqual(wh.rhyme_key("yyy"), "yy")
+        self.assertEqual(wh.rhyme_key("pst"), "pst")
+
+
+class TestRareAndGrouping(unittest.TestCase):
+    def _rank(self, table, dm=None, found=None):
+        with mock.patch.object(wh, "zipf", side_effect=table.__getitem__):
+            return wh.rank(found if found is not None else set(table), dm)
+
+    def test_rare_tier_bounds(self):
+        c, l, r = self._rank({"abcd": 2.7, "efg": 2.7, "hijk": 2.49, "lmno": 3.0})
+        self.assertEqual([x["word"] for x in r], ["abcd"])
+        self.assertEqual([x["word"] for x in l], ["lmno"])
+        self.assertEqual(c, [])
+
+    def test_rare_forms_min_len(self):
+        t = {"abcd": 2.7, "abcds": 2.0, "abcded": 2.0}
+        _, _, r = self._rank(t, {"abcds": "abcd", "abcded": "abcd"})
+        self.assertEqual(r[0]["forms"], ["abcded", "abcds"])
+
+    def test_rare_three_letter_base_forms_standalone(self):
+        t = {"abc": 2.7, "abcs": 2.0, "abced": 2.0}
+        _, _, r = self._rank(t, {"abcs": "abc", "abced": "abc"})
+        self.assertEqual([x["word"] for x in r], ["abced", "abcs"])
+        for x in r:
+            self.assertEqual(x["base"], "abc")
+            self.assertEqual(x["forms"], [])
+        # base 3 letters at rare tier is not shown even when found
+        _, _, r = self._rank(t, {"abcs": "abc"}, found={"abc", "abcs"})
+        self.assertEqual([x["word"] for x in r], ["abcs"])
+
+    def test_rare_form_of_low_base_dropped(self):
+        _, _, r = self._rank({"abcd": 2.4, "abcds": 3.5}, {"abcds": "abcd"})
+        self.assertEqual(r, [])
+
+    def test_biggest_group_first(self):
+        t = {"bong": 5.0, "dong": 5.0, "tong": 5.0, "party": 6.0, "zebra": 6.0}
+        c, _, _ = self._rank(t)
+        self.assertEqual([x["word"] for x in c], ["bong", "dong", "tong", "party", "zebra"])
+        self.assertEqual([x["group_size"] for x in c], [3, 3, 3, 1, 1])
+        self.assertEqual({x["rhyme"] for x in c[:3]}, {"ong"})
+
+    def test_size_tie_longest_member(self):
+        t = {"bat": 5.0, "cat": 5.0, "cuts": 5.0, "puts": 5.0}
+        c, _, _ = self._rank(t)
+        self.assertEqual([x["word"] for x in c], ["cuts", "puts", "bat", "cat"])
+
+    def test_within_group_order_and_continuity(self):
+        t = {"tong": 5.0, "bong": 5.5, "wrong": 5.0, "dong": 5.5}
+        c, _, _ = self._rank(t)
+        self.assertEqual([x["word"] for x in c], ["wrong", "bong", "dong", "tong"])
+        self.assertEqual([x["group_size"] for x in c], [4] * 4)
+
+    def test_group_ties_zipf_then_key(self):
+        t = {"bat": 5.0, "cat": 5.0, "bog": 6.0, "dog": 6.0}
+        c, _, _ = self._rank(t)
+        self.assertEqual([x["word"] for x in c], ["bog", "dog", "bat", "cat"])
+        t = {"bat": 5.0, "cat": 5.0, "bog": 5.0, "dog": 5.0}
+        c, _, _ = self._rank(t)
+        self.assertEqual([x["rhyme"] for x in c], ["at", "at", "og", "og"])
+
+    def test_nested_forms_do_not_change_group(self):
+        t = {"bong": 5.0, "bongs": 5.0, "bonged": 5.0, "dong": 5.0, "tong": 5.0, "zzzz": 6.0}
+        c, _, _ = self._rank(t, {"bongs": "bong", "bonged": "bong"})
+        self.assertEqual([x["word"] for x in c[:3]], ["bong", "dong", "tong"])
+        self.assertEqual(c[0]["forms"], ["bonged", "bongs"])
+        self.assertEqual(c[0]["group_size"], 3)
+
+    def test_standalone_form_groups_by_own_word(self):
+        t = {"plans": 4.0, "plan": 5.5, "clans": 5.5}
+        c, _, _ = self._rank(t, {"plans": "plan"}, found={"plans", "clans"})
+        self.assertEqual({x["rhyme"] for x in c}, {"ans"})
+        self.assertEqual(c[0]["group_size"], 2)
+
+    def test_rare_truncation_cap(self):
+        rows = [{"word": f"w{i}x", "base": None, "forms": [f"w{i}xs"] * 2} for i in range(20)]
+        out, n = wh.truncate_rows(rows)
+        self.assertEqual(n, 30)
+
+    def test_format_output_three_columns_and_width(self):
+        def mk(p):
+            return [{"word": f"{p}{i}xx", "base": None, "forms": [], "rhyme": "x", "group_size": 1}
+                    for i in range(40)]
+        with mock.patch.object(wh, "zipf", return_value=3.0):
+            out = wh.format_output("A" * 16, mk("a"), mk("b"), mk("c"), 1.0)
+        self.assertIn("RARE (zipf 2.5-3, 4+)", out)
+        self.assertLessEqual(max(map(len, out.splitlines())), 100)
+        for name in ("Common", "Less common", "Rare"):
+            self.assertIn(f"{name}: shown 30 of 40", out)
+        self.assertIn("Total: 120 words", out)
 
 
 class TestInflections(unittest.TestCase):
@@ -235,8 +341,8 @@ class TestIntegration(unittest.TestCase):
         paths = wh.solve_paths(board, trie)
         for w in ["pat", "tap", "sap", "line", "sat"]:
             self.assertIn(w, paths)
-        common, less = wh.rank(paths, dm)
-        by = {r["word"]: r for r in common + less}
+        common, less, rare = wh.rank(paths, dm)
+        by = {r["word"]: r for r in common + less + rare}
         for base, form in [("plan", "plans"), ("part", "parts"), ("line", "lines"),
                            ("seat", "seats"), ("site", "sites")]:
             self.assertIn(form, by[base]["forms"], form)

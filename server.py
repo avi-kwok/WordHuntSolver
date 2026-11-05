@@ -15,7 +15,7 @@ INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.h
 def build_result(board, trie, derived_map=None):
     t = time.perf_counter()
     paths = wh.solve_paths(board, trie)
-    common, less = wh.rank(paths, derived_map)
+    common, less, rare = wh.rank(paths, derived_map)
 
     def item(w):
         return {"word": w, "points": wh.score(w),
@@ -26,15 +26,19 @@ def build_result(board, trie, derived_map=None):
         for r in wh.truncate_rows(tier)[0]:
             d = item(r["word"])
             d["base"] = r["base"]
+            d["rhyme"] = r["rhyme"]
+            d["group_size"] = r["group_size"]
             d["forms"] = [item(f) for f in r["forms"]]
             out.append(d)
         return out
 
-    words = wh.tier_words(common) + wh.tier_words(less)
+    words = wh.tier_words(common) + wh.tier_words(less) + wh.tier_words(rare)
     result = {
         "board": board,
         "common": rows(common),
         "less_common": rows(less),
+        "rare": rows(rare),
+        "rare_total": len(wh.tier_words(rare)),
         "common_total": len(wh.tier_words(common)),
         "less_common_total": len(wh.tier_words(less)),
         "total_words": len(words),
