@@ -17,7 +17,6 @@ INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.h
 def build_result(board, trie, derived_map=None):
     t = time.perf_counter()
     paths = wh.solve_paths(board, trie)
-    dfs_ms = (time.perf_counter() - t) * 1000
     common, less, rare = wh.rank(paths, derived_map)
 
     def item(w):
@@ -53,14 +52,6 @@ def build_result(board, trie, derived_map=None):
         "total_points": sum(wh.score(w) for w in words),
     }
     result["solve_ms"] = round((time.perf_counter() - t) * 1000, 1)
-    tb = time.perf_counter()
-    found, st = wh.solve_bfs(board, trie)
-    bfs_ms = (time.perf_counter() - tb) * 1000
-    result["bfs"] = {
-        "words": [{"word": w, "points": wh.score(w), "zipf": round(wh.zipf(w), 1),
-                   "path": p, "order": o, "key": round(wh.bfs_key(w), 2)}
-                  for w, p, o in wh.bfs_list(found, derived_map)],
-        **st, "ms": round(bfs_ms, 2), "dfs_ms": round(dfs_ms, 2)}
     return result
 
 

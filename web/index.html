@@ -42,14 +42,6 @@ button:focus-visible{outline:3px solid #fff;outline-offset:2px}
 .secondary{background:#fff}
 button:disabled{opacity:.5;cursor:not-allowed}
 .err{color:#fff;background:#a42a1a;border-radius:10px;padding:8px 12px;margin:12px auto 0;width:var(--bw);text-align:center;font-weight:700}
-.tog{display:flex;gap:8px;justify-content:center;margin-top:16px}
-.tog button{padding:6px 16px;font-size:.85rem;border-radius:12px;background:#fff}
-.tog button.on{background:var(--rim);color:#12301a}
-.bfs{margin-top:16px;background:var(--card);border-radius:14px;padding:6px 8px;box-shadow:0 4px 12px rgba(0,0,0,.22)}
-.bst{text-align:center;font-weight:800;font-size:.85rem;color:var(--dark);padding:2px 0}
-.bcap{text-align:center;font-size:.7rem;color:var(--muted);margin-bottom:4px}
-.bfs .row{grid-template-columns:2em 1fr auto auto auto auto}
-.bfs .m{font-size:.7rem;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
 .cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:16px}
 .col{min-width:0;background:var(--card);border-radius:14px;padding:5px 6px;box-shadow:0 4px 12px rgba(0,0,0,.22)}
 .col h2{margin:0 0 6px;font-size:.95rem;text-align:center;font-weight:900;color:var(--dark)}
@@ -76,8 +68,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .foot{margin:14px 0 0;color:#fff;text-align:center;font-weight:700;font-size:.85rem;line-height:1.6;text-shadow:0 1px 2px rgba(0,0,0,.4)}
 .empty{color:var(--muted);text-align:center;padding:8px;font-size:.8rem}
 @media(min-width:760px){:root{--rf:.95rem}.col h2{font-size:1.05rem}}
-@media(max-width:519px){:root{--rf:.62rem}.row .z{display:none}.bfs .row{grid-template-columns:2em 1fr auto auto auto}.row{grid-template-columns:1.5em 1fr auto;gap:3px;padding:1px 2px}.col{padding:4px 3px}.col h2{font-size:.7rem}.row.sub{padding-left:.8em}.bh .br{display:none}.blk{margin-bottom:3px}.board{gap:8px;padding:10px}.board svg{left:10px;top:10px}.score{font-size:1.8rem}.hcard h1{font-size:1.3rem}}
-@media(min-width:1000px){body{overflow-x:clip}main{max-width:1400px}#s2{display:grid;grid-template-columns:minmax(0,1fr) var(--bw);grid-template-areas:"left right";gap:24px;align-items:start}.res-left{grid-area:left;min-width:0}.res-left>.tog{margin-top:0}.res-right{grid-area:right;position:sticky;top:16px}}
+@media(max-width:519px){:root{--rf:.62rem}.row .z{display:none}.row{grid-template-columns:1.5em 1fr auto;gap:3px;padding:1px 2px}.col{padding:4px 3px}.col h2{font-size:.7rem}.row.sub{padding-left:.8em}.bh .br{display:none}.blk{margin-bottom:3px}.board{gap:8px;padding:10px}.board svg{left:10px;top:10px}.score{font-size:1.8rem}.hcard h1{font-size:1.3rem}}
+@media(min-width:1000px){body{overflow-x:clip}main{max-width:1400px}#s2{display:grid;grid-template-columns:minmax(0,1fr) var(--bw);grid-template-areas:"left right";gap:24px;align-items:start}.res-left{grid-area:left;min-width:0}.res-left>.cols{margin-top:0}.res-right{grid-area:right;position:sticky;top:16px}}
 </style>
 </head>
 <body>
@@ -102,8 +94,6 @@ button:disabled{opacity:.5;cursor:not-allowed}
  <div class="board" id="mini"><svg id="lines"></svg></div>
  </div>
  <div class="res-left">
- <div class="tog"><button class="on" id="tg">Grouped</button><button id="tb">BFS list</button></div>
- <div class="bfs hidden" id="bfs"></div>
  <div class="cols" id="cols">
   <div class="col"><h2>Common</h2><div id="c1"></div></div>
   <div class="col"><h2>Less common</h2><div id="c2"></div></div>
@@ -202,43 +192,13 @@ function show(d){
  $("hw").textContent="WORDS: "+d.total_words;
  $("hs").textContent="SCORE: "+String(d.total_points).padStart(4,"0");
  $("hm").textContent=d.solve_ms+" ms";
- setView(false);bfsView(d.bfs);
- col($("c1"),d.common);col($("c2"),d.less_common);col($("c3"),d.rare);
+  col($("c1"),d.common);col($("c2"),d.less_common);col($("c3"),d.rare);
  $("foot").innerHTML="Common: shown "+countLines(d.common)+" of "+d.common_total+
   "<br>Less common: shown "+countLines(d.less_common)+" of "+d.less_common_total+
   "<br>Rare: shown "+countLines(d.rare)+" of "+d.rare_total+
   "<br>"+d.total_words+" words, "+d.total_points+" points<br>Solved in "+d.solve_ms+" ms";
 }
 var sel=null;
-function setView(b){
- $("cols").classList.toggle("hidden",b);$("bfs").classList.toggle("hidden",!b);
- $("tg").classList.toggle("on",!b);$("tb").classList.toggle("on",b);
-}
-$("tg").onclick=function(){setView(false)};
-$("tb").onclick=function(){setView(true)};
-function bfsView(b){
- var el=$("bfs");el.innerHTML="";
- if(!b)return;
- var st=document.createElement("div");st.className="bst";
- st.textContent="BFS \u00b7 "+b.states.toLocaleString()+" states \u00b7 peak frontier "+b.peak_frontier+" \u00b7 "+b.ms+" ms (DFS "+b.dfs_ms+" ms)";
- el.appendChild(st);
- var cp=document.createElement("div");cp.className="bcap";cp.textContent="sorted by length + zipf/10, ties by BFS discovery order";
- el.appendChild(cp);
- b.words.forEach(function(r,i){
-  var d=document.createElement("div");d.className="row";
-  d.innerHTML='<span class="r"></span><span class="w"></span><span class="p">'+r.points+'</span><span class="z">'+r.zipf.toFixed(1)+'</span><span class="m"></span><span class="m"></span>';
-  d.querySelector(".r").textContent=(i+1)+".";
-  d.querySelector(".w").textContent=r.word.toUpperCase();
-  var m=d.querySelectorAll(".m");m[0].textContent="#"+r.order;m[1].textContent=r.key.toFixed(2);
-  d.onclick=function(){
-   if(sel)sel.classList.remove("sel");
-   sel=d;d.classList.add("sel");highlight(r.path);
-  };
-  d.onmouseenter=function(){showPath(r.path)};
-  d.onmouseleave=function(){showPath(selPath)};
-  el.appendChild(d);
- });
-}
 function countLines(rows){return rows.reduce(function(a,r){return a+1+r.forms.length},0)}
 /*UNITS*/
 function buildUnits(rows){
@@ -322,7 +282,7 @@ window.addEventListener("resize",function(){showPath(cur)});
 $("newb").onclick=function(){
  $("s2").classList.add("hidden");$("s1").classList.remove("hidden");
  if(sel)sel.classList.remove("sel");sel=null;selPath=null;showPath(null);tiles=[];
- ["c1","c2","c3","bfs"].forEach(function(id){$(id).innerHTML=""});setView(false);$("foot").innerHTML="";
+ ["c1","c2","c3"].forEach(function(id){$(id).innerHTML=""});$("foot").innerHTML="";
  letters=new Array(16).fill("");allI.value="";sync();hideErr();
  window.scrollTo(0,0);focus(0);
 };

@@ -1,4 +1,5 @@
 import os
+import pickle
 import tempfile
 import unittest
 from unittest import mock
@@ -668,68 +669,63 @@ class TestGroupOnly(unittest.TestCase):
         self.assertEqual(len(c), wh.GROUP_MAX)
 
 
-class TestBFS(unittest.TestCase):
-    BOARDS = ["SERSPATGLINESERS", "NNDVSCOTRIHEREIT", "ITNBOENRRDASEVLD"]
-
-    @classmethod
-    def setUpClass(cls):
-        cls.trie, cls.dm = wh.startup()
-
-    def test_same_words_as_dfs(self):
-        for b in self.BOARDS:
-            found, st = wh.solve_bfs(b, self.trie)
-            words = [w for w, _, _ in found]
-            self.assertEqual(len(words), len(set(words)))
-            self.assertEqual(set(words), set(wh.solve_paths(b, self.trie)), b)
-            self.assertGreater(st["states"], 0)
-            self.assertGreaterEqual(st["peak_frontier"], 1)
-            self.assertGreaterEqual(st["levels"], 3)
-
-    def test_paths_valid_and_order(self):
-        nb = wh.neighbors()
-        for b in self.BOARDS:
-            found, _ = wh.solve_bfs(b, self.trie)
-            for w, p, _ in found:
-                self.assertEqual(len(set(p)), len(p))
-                self.assertEqual("".join(b[i] for i in p).lower(), w)
-                for x, y in zip(p, p[1:]):
-                    self.assertIn(y, nb[x])
-            self.assertEqual([o for _, _, o in found], list(range(len(found))))
-            lens = [len(w) for w, _, _ in found]
-            self.assertEqual(lens, sorted(lens))
-
-    def test_bfs_order(self):
-        z = {"abcd": 1.0, "abc": 8.0, "xyz": 3.0, "pqr": 5.0, "aaa": 4.0, "bbb": 4.0}
-        with mock.patch.object(wh, "zipf", lambda w: z[w]):
-            self.assertEqual([t[0] for t in wh.bfs_order([("abc", [], 0), ("abcd", [], 1)])],
-                             ["abcd", "abc"])
-            self.assertEqual([t[0] for t in wh.bfs_order([("xyz", [], 0), ("pqr", [], 1)])],
-                             ["pqr", "xyz"])
-            self.assertEqual([t[0] for t in wh.bfs_order([("bbb", [], 5), ("aaa", [], 2)])],
-                             ["aaa", "bbb"])
-
-    def test_list_filters(self):
-        board = "SERSPATGLINESERS"
-        found, _ = wh.solve_bfs(board, self.trie)
-        got = {t[0] for t in wh.bfs_list(found, self.dm)}
-        pool = set(self.dm.group_only) - set(self.dm.allowed)
-        self.assertTrue({t[0] for t in found} & pool)
-        self.assertFalse(got & pool)
-        shown = set(wh.tier_words_all(wh.rank({t[0] for t in found}, self.dm)))
-        self.assertEqual(got, shown - pool)
-        keys = [wh.bfs_key(t[0]) for t in wh.bfs_list(found, self.dm)]
-        self.assertEqual(keys, sorted(keys, reverse=True))
-
+class TestBlockAllowTrie(unittest.TestCase):
     def test_block_and_allow(self):
         with tempfile.TemporaryDirectory() as d:
             bl, al = os.path.join(d, "b.txt"), os.path.join(d, "a.txt")
             open(bl, "w").write("sat\n")
             open(al, "w").write("zat\n")
             trie, dm = wh.startup(bl, al)
-        self.assertNotIn("sat", {t[0] for t in wh.solve_bfs("SATZXXXXXXXXXXXX", trie)[0]})
-        found, _ = wh.solve_bfs("ZATSXXXXXXXXXXXX", trie)
-        self.assertIn("zat", {t[0] for t in wh.bfs_list(found, dm)})
-        self.assertNotIn("sat", {t[0] for t in wh.bfs_list(found, dm)})
+        self.assertNotIn("sat", wh.solve_paths("SATZXXXXXXXXXXXX", trie))
+        self.assertIn("zat", wh.solve_paths("ZATSXXXXXXXXXXXX", trie))
+
+
+class TestCache(unittest.TestCase):
+    BOARD = "SERSPATGLINESERS"
+
+    @staticmethod
+    def _result(trie, dm):
+        c, l, r = wh.rank(wh.solve_paths(TestCache.BOARD, trie), dm)
+        return c, l, r
+
+    def test_cached_equals_built(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "c.pkl")
+            wh.build_cache(path)
+            with mock.patch("builtins.print") as pr:
+                t1, d1 = wh.startup(cache_path=path)
+            self.assertIn("(cache)", pr.call_args_list[0][0][0])
+            payload = wh._build(wh.BLOCKLIST_PATH, wh.ALLOWLIST_PATH)
+            t2, d2 = payload[0], payload[1]
+        self.assertEqual(t1, t2)
+        self.assertEqual(dict(d1), dict(d2))
+        self.assertEqual(d1.allowed, d2.allowed)
+        self.assertEqual(d1.group_only, d2.group_only)
+        self.assertEqual(self._result(t1, d1), self._result(t2, d2))
+
+    def test_fingerprint_mismatch_rebuilds(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "c.pkl")
+            with open(path, "wb") as f:
+                pickle.dump("wrong-fingerprint", f, protocol=5)
+                pickle.dump("garbage-payload", f, protocol=5)
+            with mock.patch("builtins.print") as pr:
+                trie, dm = wh.startup(cache_path=path)
+            self.assertIn("(built)", pr.call_args_list[0][0][0])
+            self.assertIn("sat", wh.solve_paths("SATXXXXXXXXXXXXX", trie))
+            with open(path, "rb") as f:  # refreshed with the right fingerprint
+                self.assertEqual(pickle.load(f), wh._fingerprint())
+
+    def test_unreadable_cache_rebuilds(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "c.pkl")
+            open(path, "wb").write(b"not a pickle")
+            self.assertIsNone(wh._read_cache(path, "x"))
+            self.assertIsNone(wh._read_cache(os.path.join(d, "missing.pkl"), "x"))
+
+    def test_unwritable_cache_ignored(self):
+        trie, dm = wh.startup(cache_path="/nonexistent-dir/c.pkl")
+        self.assertTrue(trie)
 
 
 class TestIntegration(unittest.TestCase):

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Word Hunt (4x4 Boggle-style) solver: trie + DFS."""
+import gc
+import hashlib
 import os
+import pickle
 import re
 import sys
 import time
-from collections import deque
-from functools import lru_cache
+from collections import defaultdict
 
 SIZE = 4
 CELLS = SIZE * SIZE
@@ -31,6 +33,7 @@ _SCORES = {3: 100, 4: 400, 5: 800, 6: 1400, 7: 1800, 8: 2200}
 
 BLOCKLIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocklist.txt")
 ALLOWLIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "allowlist.txt")
+CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dict_cache.pkl")
 
 
 class DerivedMap(dict):
@@ -114,72 +117,6 @@ def solve_paths(board, trie):
     return found
 
 
-def solve_bfs(board, trie):
-    """Breadth-first search over (cell, trie node, visited mask, path) states.
-
-    Level 1 = every cell whose letter is in the trie; each level extends every state
-    to unvisited neighbours whose letter is a trie child. A word is recorded the
-    FIRST time a terminal node is reached. Returns (found, stats): found = ordered
-    list of (word, path, order), order = discovery index from 0 (non-decreasing in
-    length); stats = {"states": states expanded, "peak_frontier": max deque length,
-    "levels": deepest level reached}.
-    """
-    board = board.lower()
-    nbrs = neighbors()
-    found, seen = [], set()
-    queue = deque()
-    for i in range(CELLS):
-        node = trie.get(board[i])
-        if node is not None:
-            queue.append((i, node, 1 << i, (i,)))
-    states, peak, levels = 0, len(queue), 1 if queue else 0
-    while queue:
-        i, node, mask, path = queue.popleft()
-        states += 1
-        levels = max(levels, len(path))
-        word = node.get(END)
-        if word is not None and word not in seen:
-            seen.add(word)
-            found.append((word, list(path), len(found)))
-        for j in nbrs[i]:
-            if not mask & (1 << j):
-                child = node.get(board[j])
-                if child is not None:
-                    queue.append((j, child, mask | (1 << j), path + (j,)))
-        peak = max(peak, len(queue))
-    return found, {"states": states, "peak_frontier": peak, "levels": levels}
-
-
-def bfs_key(word):
-    """L + Z / 10 for one word (see bfs_order)."""
-    return len(word) + zipf(word) / 10
-
-
-def bfs_order(found):
-    """Sort BFS `found` entries (word, path, order) for the BFS list.
-
-    key = L + Z / 10, with L = word length and Z = zipf (0-8). Z / 10 < 1, so one
-    extra letter always outweighs any zipf gap: length decides first, commonness
-    breaks ties within a length. Sort by key descending; exact ties go by BFS
-    discovery `order` ascending.
-    """
-    return sorted(found, key=lambda t: (-bfs_key(t[0]), t[2]))
-
-
-def bfs_eligible(words, derived_map=None):
-    """Words rank() displays in any column (top-level rows plus forms), minus
-    group-only pool words (they only ever appear inside groups)."""
-    dm = derived_map if derived_map is not None else {}
-    shown = set(tier_words_all(rank(set(words), dm)))
-    return shown - (set(getattr(dm, "group_only", ())) - set(getattr(dm, "allowed", ())))
-
-
-def bfs_list(found, derived_map=None):
-    """Eligible entries of `found`, in bfs_order."""
-    ok = bfs_eligible([t[0] for t in found], derived_map)
-    return bfs_order([t for t in found if t[0] in ok])
-
-
 def solve(board, trie):
     """Return set of words in prebuilt `trie` found on `board`."""
     return set(solve_paths(board, trie))
@@ -194,10 +131,15 @@ def score(word):
     return 2200 + 400 * (n - 8)
 
 
-@lru_cache(maxsize=None)
+_ZIPF = {}  # word -> zipf; filled from the dictionary cache or lazily via wordfreq
+
+
 def zipf(word):
-    from wordfreq import zipf_frequency
-    return zipf_frequency(word, "en")
+    z = _ZIPF.get(word)
+    if z is None:
+        from wordfreq import zipf_frequency
+        z = _ZIPF[word] = zipf_frequency(word, "en")
+    return z
 
 
 def filter_common(words, freq_dict, min_zipf=MIN_ZIPF):
@@ -306,12 +248,16 @@ def generate_derived(bases, freq_dict, min_zipf=DERIVED_MIN_ZIPF, exclude=frozen
 
 def _chunk(a, b):
     """Longest same-index common run of a and b as (length, start); (0, 0) if none."""
-    best, run = (0, 0), 0
-    for i in range(min(len(a), len(b))):
-        run = run + 1 if a[i] == b[i] else 0
-        if run > best[0]:
-            best = (run, i - run + 1)
-    return best
+    best = start = run = i = 0
+    for x, y in zip(a, b):
+        i += 1
+        if x == y:
+            run += 1
+            if run > best:
+                best, start = run, i - run
+        else:
+            run = 0
+    return best, start
 
 
 def shared_chunk(a, b):
@@ -329,7 +275,15 @@ def shared_chunk(a, b):
 
 def _one_off(a, b):
     """True if a and b have the same length and differ in exactly one position."""
-    return len(a) == len(b) and sum(x != y for x, y in zip(a, b)) == 1
+    if len(a) != len(b):
+        return False
+    diff = 0
+    for x, y in zip(a, b):
+        if x != y:
+            diff += 1
+            if diff > 1:
+                return False
+    return diff == 1
 
 
 def match_len(a, b):
@@ -356,6 +310,39 @@ def group_stats(words):
     return points, t
 
 
+def _build_index(words):
+    """Candidate index over `words` (positions). Two rows can only match if they
+    share a key: a MIN_SHARED run at the same index from the start (start[i][run])
+    or from the end (end[i][run] on the reversed words), or the same word with one
+    letter blanked (one_off[pattern]; the pattern's length is the word's length)."""
+    start = [defaultdict(list) for _ in range(CELLS)]
+    end = [defaultdict(list) for _ in range(CELLS)]
+    one_off = defaultdict(list)
+    m = MIN_SHARED
+    for j, w in enumerate(words):
+        rev = w[::-1]
+        n = len(w)
+        for i in range(n - m + 1):
+            start[i][w[i:i + m]].append(j)
+            end[i][rev[i:i + m]].append(j)
+        for k in range(n):
+            one_off[w[:k] + "_" + w[k + 1:]].append(j)
+    return start, end, one_off
+
+
+def _candidates(index, word):
+    """Positions of every indexed row sharing a key with `word` (itself included)."""
+    start, end, one_off = index
+    rev = word[::-1]
+    n = len(word)
+    m = MIN_SHARED
+    span = range(n - m + 1)
+    found = [start[i].get(word[i:i + m], ()) for i in span]
+    found += [end[i].get(rev[i:i + m], ()) for i in span]
+    found += [one_off.get(word[:k] + "_" + word[k + 1:], ()) for k in range(n)]
+    return set().union(*found)
+
+
 def group_tiers(common, less, rare, pool=()):
     """Group top-level rows of all three tiers in ONE pass; return three lists.
 
@@ -380,24 +367,41 @@ def group_tiers(common, less, rare, pool=()):
     group_rate desc, size desc, seed word. Rows in a group: seed, then picks
     by (-len, -zipf, word).
     """
-    key = lambda r: (-len(r["word"]), -zipf(r["word"]), r["word"])
+    zs = {}
+    memo_zipf = lambda w: zs[w] if w in zs else zs.setdefault(w, zipf(w))
+    key = lambda r: (-len(r["word"]), -memo_zipf(r["word"]), r["word"])
+    all_rows = [r for rows in (common, less, rare, pool) for r in rows]
     tier_of = {id(r): t for t, rows in enumerate((common, less, rare, pool)) for r in rows}
-    left = sorted((r for rows in (common, less, rare, pool) for r in rows),
-                  key=lambda r: (tier_of[id(r)],) + key(r))
+    order = sorted(range(len(all_rows)), key=lambda i: (tier_of[id(all_rows[i])],) + key(all_rows[i]))
+    rows_ = [all_rows[i] for i in order]
+    tiers = [tier_of[id(r)] for r in rows_]
+    index = _build_index([r["word"] for r in rows_])
+    assigned = [False] * len(rows_)
     cols = ([], [], [], [])
-    while left:
-        seed = left.pop(0)
-        st = tier_of[id(seed)]
+    for si, seed in enumerate(rows_):
+        if assigned[si]:
+            continue
+        assigned[si] = True
+        st = tiers[si]
         if st == 3:
             continue
         sw = seed["word"]
-        cands = [(match_len(sw, r["word"]), r) for r in left if tier_of[id(r)] >= st]
-        cands = [(m, r) for m, r in cands if m >= MIN_SHARED
-                 and shared_chunk(sw, r["word"]) != r["word"]]
-        cands.sort(key=lambda t: (-t[0], -score(t[1]["word"]), -zipf(t[1]["word"]), t[1]["word"]))
-        picks = sorted((r for _, r in cands[:GROUP_MAX - 1]), key=key)
-        ids = {id(r) for r in picks}
-        left = [r for r in left if id(r) not in ids]
+        cands = []
+        for j in _candidates(index, sw):
+            if assigned[j] or tiers[j] < st:
+                continue
+            w = rows_[j]["word"]
+            c = shared_chunk(sw, w)  # match_len(sw, w) with the chunk reused
+            m = len(c)
+            if m < len(sw) - 1 and _one_off(sw, w):
+                m = len(sw) - 1
+            if m >= MIN_SHARED and c != w:
+                cands.append((m, j))
+        cands.sort(key=lambda t: (-t[0], -score(rows_[t[1]]["word"]),
+                                  -memo_zipf(rows_[t[1]]["word"]), rows_[t[1]]["word"]))
+        for _, j in cands[:GROUP_MAX - 1]:
+            assigned[j] = True
+        picks = sorted((rows_[j] for _, j in cands[:GROUP_MAX - 1]), key=key)
         g = [seed] + picks
         words = []
         for r in g:
@@ -503,11 +507,6 @@ def tier_words(rows):
     return [w for r in rows for w in [r["word"]] + r["forms"]]
 
 
-def tier_words_all(tiers):
-    """Every word in several tiers, forms included."""
-    return [w for t in tiers for w in tier_words(t)]
-
-
 def parse_board(text):
     """Validate and normalise input; return 16 uppercase letters or raise ValueError."""
     s = "".join(text.split())
@@ -568,34 +567,33 @@ def run(board, trie, derived_map):
     print(format_output(board, common, less, rare, ms))
 
 
-def run_bfs(board, trie, derived_map):
-    t = time.perf_counter()
-    solve_paths(board, trie)
-    dfs_ms = (time.perf_counter() - t) * 1000
-    t = time.perf_counter()
-    found, st = solve_bfs(board, trie)
-    ms = (time.perf_counter() - t) * 1000
-    rows = bfs_list(found, derived_map)
-    for r in range(SIZE):
-        print(" ".join(board[r * SIZE:(r + 1) * SIZE]))
-    print()
-    print(f"BFS: {st['states']} states, peak frontier {st['peak_frontier']}, "
-          f"{st['levels']} levels, {ms:.1f} ms (DFS {dfs_ms:.1f} ms)")
-    for i, (w, _, order) in enumerate(rows[:40]):
-        print(f"{i + 1:3d}. {w.upper():<16} {score(w):>5} {zipf(w):>4.1f} "
-              f"#{order:<5d} {bfs_key(w):>6.2f}")
+def _fingerprint(blocklist_path=BLOCKLIST_PATH, allowlist_path=ALLOWLIST_PATH):
+    """sha256 over everything that shapes the dictionary: this file's bytes, the
+    block/allow lists and the installed english-words / wordfreq versions."""
+    from importlib import metadata
+    h = hashlib.sha256()
+
+    def feed(label, data):
+        h.update(label.encode() + b"\0" + str(len(data)).encode() + b"\0" + data)
+
+    for label, path in (("code", os.path.abspath(__file__)),
+                        ("block", blocklist_path), ("allow", allowlist_path)):
+        try:
+            with open(path, "rb") as f:
+                feed(label, f.read())
+        except FileNotFoundError:
+            feed(label, b"<missing>")
+    for pkg in ("english-words", "wordfreq"):
+        try:
+            v = metadata.version(pkg)
+        except metadata.PackageNotFoundError:
+            v = "<none>"
+        feed(pkg, v.encode())
+    return h.hexdigest()
 
 
-def startup(blocklist_path=BLOCKLIST_PATH, allowlist_path=ALLOWLIST_PATH):
-    """Load dictionary, build trie once, warm up wordfreq.
-
-    Words in the blocklist are removed (exact words only) from bases and
-    derived forms. Allowlisted words (alpha, 3-16 letters, not blocked) are
-    always added to the trie; one with no derived root is an ordinary
-    top-level row. Returns (trie, derived_map); derived_map.allowed holds
-    the allowlist.
-    """
-    t = time.perf_counter()
+def _build(blocklist_path, allowlist_path):
+    """Full dictionary pipeline. Returns (trie, derived_map, zipfs, stats)."""
     from english_words import get_english_words_set
     from wordfreq import get_frequency_dict
     zipf("the")
@@ -620,25 +618,86 @@ def startup(blocklist_path=BLOCKLIST_PATH, allowlist_path=ALLOWLIST_PATH):
                   - filter_common(pool_cands, freq, RARE_MIN_ZIPF)
                   - bases - set(derived_map) - allowed - blocked)
     derived_map.group_only = frozenset(group_only)
-    trie = build_trie((bases | set(derived_map) | allowed | group_only) - blocked)
+    in_trie = (bases | set(derived_map) | allowed | group_only) - blocked
+    trie = build_trie(in_trie)
+    zipfs = {w: zipf(w) for w in in_trie if 3 <= len(w) <= CELLS}
+    stats = {"bases": len(bases), "derived": len(derived_map), "proper": proper,
+             "blocked": n_blocked, "allowed": len(allowed), "group_only": len(group_only)}
+    return trie, derived_map, zipfs, stats
+
+
+def _write_cache(path, fingerprint, payload):
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(fingerprint, f, protocol=5)
+        pickle.dump(payload, f, protocol=5)
+    os.replace(tmp, path)
+
+
+def _read_cache(path, fingerprint):
+    """Payload tuple from the cache at `path`, or None if missing, stale or unreadable.
+    The pickle is a trusted local file generated by `--build-cache`."""
+    try:
+        with open(path, "rb") as f:
+            if pickle.load(f) != fingerprint:
+                return None
+            gc.disable()
+            try:
+                return pickle.load(f)
+            finally:
+                gc.enable()
+    except Exception:
+        return None
+
+
+def build_cache(path=None, blocklist_path=BLOCKLIST_PATH, allowlist_path=ALLOWLIST_PATH):
+    """Run the full build and write the dictionary cache (errors propagate)."""
+    path = path or CACHE_PATH
+    t = time.perf_counter()
+    payload = _build(blocklist_path, allowlist_path)
+    _write_cache(path, _fingerprint(blocklist_path, allowlist_path), payload)
+    print(f"Wrote {path} ({os.path.getsize(path) / 1e6:.1f} MB) in "
+          f"{time.perf_counter() - t:.1f} s")
+
+
+def startup(blocklist_path=BLOCKLIST_PATH, allowlist_path=ALLOWLIST_PATH, cache_path=None):
+    """Load dictionary, build trie once, warm up wordfreq.
+
+    Words in the blocklist are removed (exact words only) from bases and
+    derived forms. Allowlisted words (alpha, 3-16 letters, not blocked) are
+    always added to the trie; one with no derived root is an ordinary
+    top-level row. Returns (trie, derived_map); derived_map.allowed holds
+    the allowlist.
+
+    Uses the prebuilt cache (`--build-cache`) when its fingerprint matches the
+    current inputs; otherwise builds from scratch and tries to refresh the cache
+    (only for the default list paths; write errors are ignored).
+    """
+    t = time.perf_counter()
+    cache_path = cache_path or CACHE_PATH
+    fp = _fingerprint(blocklist_path, allowlist_path)
+    payload = _read_cache(cache_path, fp)
+    source = "cache"
+    if payload is None:
+        source = "built"
+        payload = _build(blocklist_path, allowlist_path)
+        if blocklist_path == BLOCKLIST_PATH and allowlist_path == ALLOWLIST_PATH:
+            try:
+                _write_cache(cache_path, fp, payload)
+            except Exception:
+                pass
+    trie, derived_map, zipfs, st = payload
+    _ZIPF.update(zipfs)
     ms = (time.perf_counter() - t) * 1000
-    print(f"Loaded {len(bases)} base + {len(derived_map)} derived words in {ms:.0f} ms")
+    print(f"Loaded {st['bases']} base + {st['derived']} derived words in {ms:.0f} ms ({source})")
     print(f"  zipf >= {MIN_ZIPF:g}; rare >= {RARE_MIN_ZIPF:g} ({RARE_MIN_LEN}+); "
-          f"forms >= {DERIVED_MIN_ZIPF:g}; {proper} proper nouns; {n_blocked} blocked; {len(allowed)} allowed; {len(group_only)} group-only")
+          f"forms >= {DERIVED_MIN_ZIPF:g}; {st['proper']} proper nouns; {st['blocked']} blocked; {st['allowed']} allowed; {st['group_only']} group-only")
     return trie, derived_map
 
 
 def main(argv):
-    if len(argv) > 1 and argv[1] == "--bfs":
-        if len(argv) < 3:
-            print("Error: --bfs needs a board.", file=sys.stderr)
-            return 1
-        try:
-            board = parse_board(argv[2])
-        except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            return 1
-        run_bfs(board, *startup())
+    if len(argv) > 1 and argv[1] == "--build-cache":
+        build_cache()
         return 0
     if len(argv) > 1:
         try:

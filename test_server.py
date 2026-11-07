@@ -85,32 +85,6 @@ class TestBuildResult(unittest.TestCase):
         self.assertGreater(r["common_total"], 30)
 
 
-def check_bfs(tc, r):
-    b = r["bfs"]
-    for k in ("states", "peak_frontier", "levels", "ms", "dfs_ms"):
-        tc.assertIn(k, b)
-    tc.assertGreater(b["states"], 0)
-    tc.assertTrue(b["words"])
-    for w in b["words"]:
-        for k in ("word", "points", "zipf", "path", "order", "key"):
-            tc.assertIn(k, w)
-    keys = [w["key"] for w in b["words"]]
-    tc.assertEqual(keys, sorted(keys, reverse=True))
-    check_paths(tc, r["board"], b["words"])
-    pool = set(dmap.group_only) - set(dmap.allowed)
-    tc.assertFalse({w["word"] for w in b["words"]} & pool)
-
-
-class TestBFSResult(unittest.TestCase):
-    def test_build_result(self):
-        check_bfs(self, server.build_result(BOARD, trie, dmap))
-
-    def test_http(self):
-        code, body = req("/api/solve", json.dumps({"board": BOARD}).encode())
-        self.assertEqual(code, 200)
-        check_bfs(self, json.loads(body))
-
-
 class TestHTTP(unittest.TestCase):
     def test_valid(self):
         code, body = req("/api/solve", json.dumps({"board": "serspatglineserS"}).encode())
@@ -163,7 +137,7 @@ class TestWSGI(unittest.TestCase):
         code, _, body = call_app("POST", "/api/solve", json.dumps({"board": BOARD}).encode())
         self.assertEqual(code, 200)
         self.assertGreater(json.loads(body)["total_words"], 0)
-        check_bfs(self, json.loads(body))
+        self.assertNotIn("bfs", json.loads(body))
 
     def test_invalid_board(self):
         self.assertEqual(call_app("POST", "/api/solve", b'{"board": "ABC"}')[0], 400)
