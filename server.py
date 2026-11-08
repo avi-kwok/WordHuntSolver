@@ -14,6 +14,28 @@ MAX_BODY = 1024
 INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
 
 
+TOP_UNITS = 60
+
+
+def top_units(tiers, limit=TOP_UNITS):
+    """Merge full per-tier row-dict lists into units (one contiguous
+    group_key run each), sorted by points desc, rate desc, seed word;
+    capped at `limit`."""
+    units = []
+    for rows in tiers:
+        prev = None
+        for r in rows:
+            if prev is None or r["group_key"] != prev:
+                prev = r["group_key"]
+                units.append({"key": prev, "points": r["group_points"],
+                              "rate": r["group_rate"], "words": 0, "rows": []})
+            u = units[-1]
+            u["rows"].append(r)
+            u["words"] += 1 + len(r["forms"])
+    units.sort(key=lambda u: (-u["points"], -u["rate"], u["rows"][0]["word"]))
+    return units[:limit]
+
+
 def build_result(board, trie, derived_map=None):
     t = time.perf_counter()
     paths = wh.solve_paths(board, trie)
@@ -23,21 +45,21 @@ def build_result(board, trie, derived_map=None):
         return {"word": w, "points": wh.score(w),
                 "zipf": round(wh.zipf(w), 1), "path": paths[w]}
 
+    def row(r):
+        d = item(r["word"])
+        d["base"] = r["base"]
+        d["group_key"] = r["group_key"]
+        d["shared"] = r["shared"]
+        d["group_size"] = r["group_size"]
+        d["best_points"] = r["best_points"]
+        d["group_rate"] = round(r["group_rate"], 1)
+        d["group_points"] = r["group_points"]
+        d["group_time"] = round(r["group_time"], 2)
+        d["forms"] = [item(f) for f in r["forms"]]
+        return d
+
     def rows(tier):
-        out = []
-        for r in wh.truncate_rows(tier)[0]:
-            d = item(r["word"])
-            d["base"] = r["base"]
-            d["group_key"] = r["group_key"]
-            d["shared"] = r["shared"]
-            d["group_size"] = r["group_size"]
-            d["best_points"] = r["best_points"]
-            d["group_rate"] = round(r["group_rate"], 1)
-            d["group_points"] = r["group_points"]
-            d["group_time"] = round(r["group_time"], 2)
-            d["forms"] = [item(f) for f in r["forms"]]
-            out.append(d)
-        return out
+        return [row(r) for r in wh.truncate_rows(tier)[0]]
 
     words = wh.tier_words(common) + wh.tier_words(less) + wh.tier_words(rare)
     result = {
@@ -45,6 +67,7 @@ def build_result(board, trie, derived_map=None):
         "common": rows(common),
         "less_common": rows(less),
         "rare": rows(rare),
+        "top": top_units([[row(r) for r in t] for t in (common, less, rare)]),
         "rare_total": len(wh.tier_words(rare)),
         "common_total": len(wh.tier_words(common)),
         "less_common_total": len(wh.tier_words(less)),

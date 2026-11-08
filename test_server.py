@@ -85,6 +85,34 @@ class TestBuildResult(unittest.TestCase):
         self.assertGreater(r["common_total"], 30)
 
 
+def check_top(tc, board, top):
+    tc.assertLessEqual(len(top), 60)
+    tc.assertGreater(len(top), 0)
+    pts = [u["points"] for u in top]
+    tc.assertEqual(pts, sorted(pts, reverse=True))
+    tc.assertEqual(len({u["key"] for u in top}), len(top))
+    for u in top:
+        flat = [x for r in u["rows"] for x in [r] + r["forms"]]
+        tc.assertEqual(u["points"], sum(wh.score(x["word"]) for x in flat))
+        tc.assertEqual(u["words"], len(flat))
+        tc.assertEqual(u["key"], u["rows"][0]["group_key"])
+        check_paths(tc, board, u["rows"])
+
+
+class TestTop(unittest.TestCase):
+    def test_top(self):
+        r = server.build_result(BOARD, trie, dmap)
+        self.assertIn("top", r)
+        check_top(self, BOARD, r["top"])
+
+    def test_cap(self):
+        rows = [[{"group_key": str(i), "group_points": i, "group_rate": 1.0,
+                  "word": str(i), "forms": []} for i in range(100)]]
+        top = server.top_units(rows)
+        self.assertEqual(len(top), 60)
+        self.assertEqual(top[0]["points"], 99)
+
+
 class TestHTTP(unittest.TestCase):
     def test_valid(self):
         code, body = req("/api/solve", json.dumps({"board": "serspatglineserS"}).encode())
@@ -138,6 +166,7 @@ class TestWSGI(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertGreater(json.loads(body)["total_words"], 0)
         self.assertNotIn("bfs", json.loads(body))
+        check_top(self, BOARD, json.loads(body)["top"])
 
     def test_invalid_board(self):
         self.assertEqual(call_app("POST", "/api/solve", b'{"board": "ABC"}')[0], 400)
